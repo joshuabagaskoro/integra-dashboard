@@ -3116,10 +3116,10 @@ const CSS = `
 .btn-export-pdf:hover { background: rgba(227,95,12,.22); }
 
 /* Barging Plan export report sheet */
-.plan-sheet { background: #ffffff; color: #000000; width: 780px; max-width: 100%; padding: 14pt 18pt;
+.plan-sheet { background: #ffffff; color: #000000; width: 780px; max-width: 100%; padding: 10pt 16pt;
   font-family: Arial, sans-serif; font-size: 10pt; line-height: 1.3; box-shadow: 0 8px 30px rgba(0,0,0,.4); border-radius: 4px; box-sizing: border-box; }
-.plan-header { display: flex; align-items: center; gap: 14pt; margin-bottom: 8pt; }
-.plan-logo { height: 38pt; }
+.plan-header { display: flex; align-items: center; gap: 14pt; margin-bottom: 6pt; }
+.plan-logo { height: 32pt; }
 .plan-title { font-size: 14pt; font-weight: 700; }
 .plan-subtitle { font-size: 8.5pt; color: #444; margin-top: 1pt; }
 .plan-summary { display: flex; flex-wrap: wrap; gap: 16pt; padding: 6pt 0; border-top: 1pt solid #000; border-bottom: 1pt solid #000; margin-bottom: 8pt; }
@@ -3127,7 +3127,7 @@ const CSS = `
 .plan-summary-label { font-size: 7.5pt; text-transform: uppercase; letter-spacing: .03em; color: #555; }
 .plan-summary-value { font-size: 10pt; font-weight: 700; }
 .plan-table { width: 100%; border-collapse: collapse; margin-bottom: 8pt; table-layout: fixed; }
-.plan-table th, .plan-table td { border: 1pt solid #000; padding: 3pt 6pt; font-size: 8.5pt; vertical-align: middle; line-height: 1.25; }
+.plan-table th, .plan-table td { border: 1pt solid #000; padding: 2.5pt 6pt; font-size: 8.5pt; vertical-align: middle; line-height: 1.2; }
 .plan-table th { font-weight: 700; text-align: center; background: #999999; }
 .plan-center { text-align: center; }
 .plan-right { text-align: right; }
@@ -3135,7 +3135,7 @@ const CSS = `
 .plan-status-badge { display: inline-block; padding: 1pt 7pt; border-radius: 4pt; font-size: 8pt; font-weight: 700; border: 1pt solid #000; }
 .plan-status-final { background: #d7f4de; }
 .plan-status-draft { background: #fdf0d0; }
-.plan-footer { margin-top: 6pt; text-align: right; font-size: 6.5pt; color: #000; line-height: 1.35; }
+.plan-footer { margin-top: 4pt; text-align: right; font-size: 6.5pt; color: #000; line-height: 1.3; }
 .plan-footer-bold { font-weight: 700; }
 
 @page {
@@ -3160,6 +3160,17 @@ const CSS = `
     overflow: visible !important; width: auto !important; max-width: none !important; border-radius: 0 !important; }
   .invoice-body { display: block !important; }
   .invoice-preview-wrap { padding: 0 !important; background: none !important; display: block !important; min-height: 0 !important; }
-  .print-area { box-shadow: none !important; }
+  .print-area { box-shadow: none !important; border: none !important; width: 100% !important; }
+
+  /* The sheet's on-screen width is set in px (screen unit) while its internal spacing
+   * uses pt (print unit) — mixing the two can cause small rounding overflows once a
+   * real print engine takes over layout. Forcing 100% width for print sidesteps that
+   * entirely, letting the page's own @page margin box define the usable width. */
+  .invoice-sheet, .plan-sheet { width: 100% !important; }
+
+  /* Keep the closing address block intact as one unit rather than letting the print
+   * engine split it (or push just a sliver of it) onto a trailing page. */
+  .plan-footer, .inv-footer { page-break-inside: avoid; break-inside: avoid; }
+  .plan-table tr { page-break-inside: avoid; break-inside: avoid; }
 }
 `;
