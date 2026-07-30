@@ -1069,7 +1069,7 @@ function OverviewTab({ domes, barges, settings }) {
       </section>
 
       <section className="glass panel">
-        <div className="panel-head"><Layers3 size={16} /><span>Production by contractor</span></div>
+        <div className="panel-head"><Layers size={16} /><span>Production by contractor</span></div>
         <div className="stat-card-row">
           {productionByContractor.map((c) => (
             <StatCard key={c.id} title={c.id} tag="Production" stats={c} color={colorFor(c.id)} />
@@ -1192,7 +1192,7 @@ function StockTab({ domes }) {
             onClick={() => setInventoryOpen(!inventoryOpen)}
             style={{ cursor: 'pointer' }}
           >
-            <Layers3 size={16} />
+            <Layers size={16} />
             <span>Stock overview — Existing Inventory</span>
             <ChevronDown size={18} style={{ marginLeft: 'auto', transform: inventoryOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 200ms ease' }} />
           </div>
@@ -2320,7 +2320,7 @@ export default function IntegraDashboard() {
         <div className="nav-desktop-wrapper">
           <nav className="nav-desktop">
             <NavButton icon={LayoutGrid} label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
-            <NavButton icon={Layers3} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} />
+            <NavButton icon={Layers} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} />
             <NavButton icon={Ship} label="Barging Plan" active={tab === "plan"} onClick={() => setTab("plan")} />
             <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} />
           </nav>
@@ -2338,7 +2338,7 @@ export default function IntegraDashboard() {
 
       <nav className="nav-mobile">
         <NavButton icon={LayoutGrid} label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} mobile />
-        <NavButton icon={Layers3} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} mobile />
+        <NavButton icon={Layers} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} mobile />
         <NavButton icon={Ship} label="Plan" active={tab === "plan"} onClick={() => setTab("plan")} mobile />
         <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} mobile />
       </nav>
