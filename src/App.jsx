@@ -3108,7 +3108,7 @@ const CSS = `
 .inv-sig-table { margin-left: auto; margin-right: 0; border-collapse: collapse; margin-top: 4pt; }
 .inv-sig-box { border: 1pt solid #fff; padding: 8pt 14pt; text-align: center; min-width: 190pt; font-size: 10pt; }
 .inv-sig-gap { height: 60pt; }
-.inv-footer { margin-top: 18pt; text-align: right; font-size: 7pt; color: #000; line-height: 1.5; }
+.inv-footer { margin-top: 10pt; text-align: right; font-size: 7pt; color: #000; line-height: 1.4; }
 
 /* Export to PDF button (barging plan filter row) */
 .btn-export-pdf { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; padding: 7px 13px; border-radius: 9px;
@@ -3116,27 +3116,32 @@ const CSS = `
 .btn-export-pdf:hover { background: rgba(227,95,12,.22); }
 
 /* Barging Plan export report sheet */
-.plan-sheet { background: #ffffff; color: #000000; width: 780px; max-width: 100%; padding: 26pt 22pt;
-  font-family: Arial, sans-serif; font-size: 10pt; line-height: 1.4; box-shadow: 0 8px 30px rgba(0,0,0,.4); border-radius: 4px; box-sizing: border-box; }
-.plan-header { display: flex; align-items: center; gap: 16pt; margin-bottom: 14pt; }
-.plan-logo { height: 50pt; }
-.plan-title { font-size: 15pt; font-weight: 700; }
-.plan-subtitle { font-size: 9pt; color: #444; margin-top: 2pt; }
-.plan-summary { display: flex; flex-wrap: wrap; gap: 18pt; padding: 10pt 0; border-top: 1pt solid #000; border-bottom: 1pt solid #000; margin-bottom: 12pt; }
-.plan-summary-item { display: flex; flex-direction: column; gap: 2pt; }
-.plan-summary-label { font-size: 8pt; text-transform: uppercase; letter-spacing: .03em; color: #555; }
-.plan-summary-value { font-size: 11pt; font-weight: 700; }
-.plan-table { width: 100%; border-collapse: collapse; margin-bottom: 14pt; table-layout: fixed; }
-.plan-table th, .plan-table td { border: 1pt solid #000; padding: 5pt 6pt; font-size: 9pt; vertical-align: middle; }
+.plan-sheet { background: #ffffff; color: #000000; width: 780px; max-width: 100%; padding: 14pt 18pt;
+  font-family: Arial, sans-serif; font-size: 10pt; line-height: 1.3; box-shadow: 0 8px 30px rgba(0,0,0,.4); border-radius: 4px; box-sizing: border-box; }
+.plan-header { display: flex; align-items: center; gap: 14pt; margin-bottom: 8pt; }
+.plan-logo { height: 38pt; }
+.plan-title { font-size: 14pt; font-weight: 700; }
+.plan-subtitle { font-size: 8.5pt; color: #444; margin-top: 1pt; }
+.plan-summary { display: flex; flex-wrap: wrap; gap: 16pt; padding: 6pt 0; border-top: 1pt solid #000; border-bottom: 1pt solid #000; margin-bottom: 8pt; }
+.plan-summary-item { display: flex; flex-direction: column; gap: 1pt; }
+.plan-summary-label { font-size: 7.5pt; text-transform: uppercase; letter-spacing: .03em; color: #555; }
+.plan-summary-value { font-size: 10pt; font-weight: 700; }
+.plan-table { width: 100%; border-collapse: collapse; margin-bottom: 8pt; table-layout: fixed; }
+.plan-table th, .plan-table td { border: 1pt solid #000; padding: 3pt 6pt; font-size: 8.5pt; vertical-align: middle; line-height: 1.25; }
 .plan-table th { font-weight: 700; text-align: center; background: #999999; }
 .plan-center { text-align: center; }
 .plan-right { text-align: right; }
 .plan-muted { color: #888; font-style: italic; }
-.plan-status-badge { display: inline-block; padding: 2pt 8pt; border-radius: 4pt; font-size: 8.5pt; font-weight: 700; border: 1pt solid #000; }
+.plan-status-badge { display: inline-block; padding: 1pt 7pt; border-radius: 4pt; font-size: 8pt; font-weight: 700; border: 1pt solid #000; }
 .plan-status-final { background: #d7f4de; }
 .plan-status-draft { background: #fdf0d0; }
-.plan-footer { margin-top: 10pt; text-align: right; font-size: 7pt; color: #000; line-height: 1.5; }
+.plan-footer { margin-top: 6pt; text-align: right; font-size: 6.5pt; color: #000; line-height: 1.35; }
 .plan-footer-bold { font-weight: 700; }
+
+@page {
+  size: A4 portrait;
+  margin: 8mm;
+}
 
 @media print {
   /* Remove the rest of the dashboard from the page flow entirely (display:none, not
