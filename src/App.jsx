@@ -3139,9 +3139,22 @@ const CSS = `
 .plan-footer-bold { font-weight: 700; }
 
 @media print {
-  body * { visibility: hidden; }
-  .print-area, .print-area * { visibility: visible; }
-  .print-area { position: absolute; top: 0; left: 0; width: 100%; box-shadow: none; }
+  /* Remove the rest of the dashboard from the page flow entirely (display:none, not
+   * visibility:hidden) — visibility:hidden keeps the full-height layout intact even
+   * though it's invisible, which makes the print engine paginate against the entire
+   * dashboard's height instead of just the small modal, producing blank leading pages
+   * before the real content shows up. display:none collapses that height to zero. */
+  .bg-glow, .topbar, .content, .nav-mobile { display: none !important; }
   .no-print { display: none !important; }
+
+  /* Neutralize the modal's on-screen chrome (dark backdrop, centering, fixed
+   * positioning, scroll clipping) so the print-area flows naturally from the top
+   * of the page and paginates across as many pages as it actually needs. */
+  .invoice-modal { position: static !important; background: none !important; padding: 0 !important; display: block !important; }
+  .invoice-panel { position: static !important; box-shadow: none !important; max-height: none !important;
+    overflow: visible !important; width: auto !important; max-width: none !important; border-radius: 0 !important; }
+  .invoice-body { display: block !important; }
+  .invoice-preview-wrap { padding: 0 !important; background: none !important; display: block !important; min-height: 0 !important; }
+  .print-area { box-shadow: none !important; }
 }
 `;
