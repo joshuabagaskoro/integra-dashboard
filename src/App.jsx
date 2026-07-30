@@ -2854,7 +2854,7 @@ const CSS = `
 .empty-state { padding: 40px 20px; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #8A97A8; font-size: 13px; text-align: center; }
 
 .barge-list { display: flex; flex-direction: column; gap: 8px; }
-.barge-row { padding: 0; overflow: hidden; }
+.barge-row { padding: 0; }
 .barge-final { border-color: rgba(74,222,128,.35); }
 .barge-row-top { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; flex-wrap: wrap; }
 .barge-row-left { display: flex; align-items: center; gap: 8px; min-width: 120px; }
