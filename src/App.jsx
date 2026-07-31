@@ -15,7 +15,7 @@ const TODAY = new Date("2026-07-27");
 /* Bump this ONLY when DEFAULT_DOMES or DEFAULT_BARGES is edited with new Excel-sourced
  * data (stock updates, new barge plans). Do NOT change it for feature/UI/logic edits that
  * don't touch the underlying data — that's the whole point of this timestamp. */
-const DATA_LAST_UPDATED = "2026-07-31";
+const DATA_LAST_UPDATED = "2026-08-01";
 
 const DEFAULT_SETTINGS = {
   bargeSize: 10500,
@@ -31,6 +31,11 @@ const PRODUCTION_TARGETS_2026 = {
   "IMN-3": { targetWMT: 120000, targetNi: 1.25 },
   "IMN-4": { targetWMT: 80000, targetNi: 1.35 },
 };
+
+// Lab-assay fields checked for missing data (0%) before finalizing a barge or on the
+// Check Status modal. Al2O3 deliberately excluded — it's never actually collected by
+// the lab, so checking it would falsely flag every single dome.
+const LAB_FIELDS = [["ni", "Ni"], ["fe", "Fe"], ["co", "Co"], ["sio2", "SiO2"], ["mgo", "MgO"], ["simg", "Si:Mg"]];
 
 const PALETTE = [
   "#22D3B8", "#F5B841", "#9B8CFF", "#FF7A7A", "#60A5FA", "#4ADE80",
@@ -445,12 +450,12 @@ const DEFAULT_DOMES = [
 {id:"ID.042/BLOK.U/IMN 02/2026",contractor:"IMN-2",stock:1310,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"",source:"production"},
 {id:"ID.043/BLOK.U/IMN 02/2026",contractor:"IMN-2",stock:983,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"",source:"production"},
 {id:"ID.044/BLOK.U/IMN 02/2026",contractor:"IMN-2",stock:765,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"",source:"production"},
-{id:"ID.001/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:1082,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"IMN-3-UTARA",source:"production"},
-{id:"ID.002/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:541,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"IMN-3-UTARA",source:"production"},
-{id:"ID.003/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:659,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"IMN-3-UTARA",source:"production"},
-{id:"ID.004/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:1082,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"IMN-3-UTARA",source:"production"},
+{id:"ID.001/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:1082,ni:1.27,fe:12.88,co:0.03,sio2:47.88,mgo:16.39,al2o3:0,simg:2.92,location:"IMN-3-UTARA",source:"production"},
+{id:"ID.002/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:541,ni:1.54,fe:13.37,co:0.03,sio2:46.87,mgo:16.44,al2o3:0,simg:2.85,location:"IMN-3-UTARA",source:"production"},
+{id:"ID.003/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:659,ni:1.15,fe:13.66,co:0.03,sio2:46.02,mgo:25.17,al2o3:0,simg:1.83,location:"IMN-3-UTARA",source:"production"},
+{id:"ID.004/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:1082,ni:1.29,fe:14.43,co:0.03,sio2:45.09,mgo:14.04,al2o3:0,simg:3.21,location:"IMN-3-UTARA",source:"production"},
 {id:"ID.005/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:676,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"IMN-3-UTARA",source:"production"},
-{id:"ID.006/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:710,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"IMN-3-UTARA",source:"production"}
+{id:"ID.006/BLOK.U/IMN 03/2026",contractor:"IMN-3",stock:710,ni:0,fe:0,co:0,sio2:0,mgo:0,al2o3:0,simg:0,location:"IMN-3-UTARA",source:"production"},
 ];
 
 /* ----------------------------- actual barge data (finalized) -----------------------------
@@ -469,9 +474,9 @@ const DEFAULT_BARGES = [
 {no:7,shipDate:"2026-07-19",bargeName:"BG MILKY WAY 124",tugboatName:"TB JELAJAH 124",sources:[{id:"DOME 123",amt:1316.0,grade:1.22}, {id:"DOME 145",amt:937.0,grade:1.74}, {id:"DOME 150_1",amt:140.0,grade:2.27}, {id:"DOME 154_1",amt:1355.0,grade:1.71}, {id:"DOME 163_1",amt:598.0,grade:1.28}, {id:"DOME 168_1",amt:120.0,grade:1.3}, {id:"DOME 178_1",amt:239.0,grade:1.33}, {id:"DOME 180_1",amt:159.0,grade:1.23}, {id:"DOME 181_1",amt:159.0,grade:1.13}, {id:"DOME 182_1",amt:259.0,grade:1.26}, {id:"DOME 183_1",amt:219.0,grade:1.24}, {id:"DOME 184_1",amt:120.0,grade:1.24}, {id:"D.01/AMR-N1/IMN-ANM",amt:299.0,grade:1.22}, {id:"D.12/AMR-S2/IMN-ANM",amt:339.0,grade:1.75}, {id:"D.22/AMR-S2/IMN-ANM",amt:359.0,grade:1.38}, {id:"D.28/AMR-S2/IMN-ANM",amt:179.0,grade:1.35}, {id:"DM 303 A",amt:279.0,grade:1.12}, {id:"DM 319 A",amt:219.0,grade:1.05}, {id:"DM 320 A",amt:379.0,grade:1.56}, {id:"DM 333 A",amt:1576.0,grade:1.32}, {id:"DOME 364",amt:100.0,grade:0.96}, {id:"DOME 370",amt:140.0,grade:1.26}, {id:"DOME 371",amt:159.0,grade:1.15}, {id:"DOME 372",amt:120.0,grade:1.22}, {id:"DOME 373",amt:279.0,grade:1.28}, {id:"DOME 376",amt:199.0,grade:1.39}, {id:"DOME 393 (D.29/AMR-S.2)",amt:279.0,grade:1.42}],totalWMT:10526.0,grade:1.4034,status:"excess",finalized:true},
 {no:8,shipDate:"2026-07-21",bargeName:"BG EDWARD 330 5",tugboatName:"TB EDWARD 2000 2",sources:[{id:"DM 319 A",amt:479.0,grade:1.05}, {id:"DOME 369",amt:218.0,grade:1.22}, {id:"DOME 403/IMN/CPK",amt:545.0,grade:1.39}, {id:"DOME 409 IMN AMRUL",amt:305.0,grade:1.5}, {id:"DOME 412",amt:3006.0,grade:1.21}, {id:"ID.003/BLOK.S/IMN 01/2026",amt:1220.0,grade:1.83}, {id:"ID.001/BLOK.S/IMN 01/2026",amt:849.0,grade:1.47}, {id:"ID.004/BLOK.S/IMN 01/2026",amt:936.0,grade:1.42}, {id:"ID.011/BLOK.S/IMN 01/2026",amt:937.0,grade:1.57}, {id:"ID.005/BLOK.S/IMN 01/2026",amt:872.0,grade:1.25}, {id:"ID.007/BLOK.S/IMN 01/2026",amt:653.0,grade:1.32}, {id:"ID.002/BLOK.S/IMN 01/2026",amt:501.0,grade:1.1}],totalWMT:10521.0,grade:1.3692,status:"exact",finalized:true},
 {no:9,shipDate:"2026-07-31",bargeName:"",tugboatName:"",sources:[{id:"ID.001/BLOK.U/IMN 02/2026",amt:437,grade:0.98}, {id:"ID.023/BLOK.S/IMN 01/2026",amt:1181,grade:1.7025}, {id:"D-421 AMR-IMN",amt:1000,grade:0.79}, {id:"ID.004/BLOK.U/IMN 02/2026",amt:218,grade:1.02}, {id:"ID.002/BLOK.U/IMN 02/2026",amt:109,grade:1.05}, {id:"ID.005/BLOK.U/IMN 02/2026",amt:306,grade:1.11}, {id:"ID.007/BLOK.U/IMN 02/2026",amt:459,grade:1.19}, {id:"ID.008/BLOK.S/IMN 01/2026",amt:1181,grade:1.21}, {id:"ID.012/BLOK.S/IMN 01/2026",amt:1198,grade:1.26}, {id:"ID.007/BLOK.S/IMN 01/2026",amt:528,grade:1.32}, {id:"ID.008/BLOK.U/IMN 02/2026",amt:240,grade:1.34}, {id:"ID.021/BLOK.S/IMN 01/2026",amt:1198,grade:1.37}, {id:"ID.004/BLOK.S/IMN 01/2026",amt:245,grade:1.42}, {id:"ID.013/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.028/BLOK.S/IMN 01/2026",amt:1100,grade:2.0425}],totalWMT:10581,grade:1.3725,status:"exact",finalized:false},
-{no:10,shipDate:"2026-08-02",bargeName:"",tugboatName:"",sources:[{id:"ID.029/BLOK.S/IMN 01/2026",amt:1181,grade:1.7875}, {id:"ID.026/BLOK.S/IMN 01/2026",amt:1181,grade:1.5325}, {id:"ID.010/BLOK.S/IMN 01/2026",amt:1232,grade:1.22}, {id:"ID.004/BLOK.U/IMN 03/2026",amt:1082,grade:0}, {id:"ID.011/BLOK.U/IMN 02/2026",amt:218,grade:0.93}, {id:"ID.002/BLOK.S/IMN 02/2026",amt:175,grade:1.09}, {id:"ID.009/BLOK.S/IMN 01/2026",amt:1180,grade:1.18}, {id:"ID.016/BLOK.S/IMN 01/2026",amt:1181,grade:1.49}, {id:"ID.005/BLOK.S/IMN 01/2026",amt:309,grade:1.25}, {id:"ID.001/BLOK.U/IMN 03/2026",amt:1082,grade:0}, {id:"ID.019/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.020/BLOK.U/IMN 02/2026",amt:502,grade:0.92}, {id:"ID.003/BLOK.U/IMN 02/2026",amt:87,grade:1.06}],totalWMT:10591,grade:1.113,status:"deficit",finalized:false},
-{no:11,shipDate:"2026-08-04",bargeName:"",tugboatName:"",sources:[{id:"ID.024/BLOK.S/IMN 01/2026",amt:1181,grade:1.835}, {id:"ID.002/BLOK.S/IMN 01/2026",amt:680,grade:1.1}, {id:"ID.016/BLOK.U/IMN 02/2026",amt:743,grade:1.19}, {id:"ID.012/BLOK.U/IMN 02/2026",amt:240,grade:1.03}, {id:"ID.006/BLOK.S/IMN 01/2026",amt:1181,grade:1.47}, {id:"ID.003/BLOK.S/IMN 02/2026",amt:655,grade:0.99}, {id:"ID.022/BLOK.S/IMN 01/2026",amt:1181,grade:1.6375}, {id:"ID.003/BLOK.U/IMN 03/2026",amt:659,grade:0}, {id:"ID.004/BLOK.S/IMN 02/2026",amt:808,grade:1.16}, {id:"ID.025/BLOK.S/IMN 01/2026",amt:1181,grade:1.635}, {id:"ID.005/BLOK.S/IMN 02/2026",amt:655,grade:1.02}, {id:"ID.001/BLOK.S/IMN 02/2026",amt:743,grade:1.05}, {id:"ID.027/BLOK.S/IMN 01/2026",amt:650,grade:1.57}],totalWMT:10557,grade:1.2979,status:"deficit",finalized:false},
-{no:12,shipDate:"2026-08-06",bargeName:"",tugboatName:"",sources:[{id:"ID.021/BLOK.U/IMN 02/2026",amt:349,grade:0.78}, {id:"ID.022/BLOK.U/IMN 02/2026",amt:546,grade:0.85}, {id:"ID.015/BLOK.U/IMN 02/2026",amt:393,grade:0.92}, {id:"ID.009/BLOK.U/IMN 02/2026",amt:437,grade:0.89}, {id:"ID.023/BLOK.U/IMN 02/2026",amt:328,grade:0.87}, {id:"ID.019/BLOK.U/IMN 02/2026",amt:699,grade:0.93}, {id:"D-422 AMR-IMN",amt:250,grade:0.75}, {id:"ID.006/BLOK.U/IMN 02/2026",amt:218,grade:1.03}, {id:"ID.017/BLOK.U/IMN 02/2026",amt:393,grade:1.03}, {id:"ID.006/BLOK.S/IMN 02/2026",amt:480,grade:1.21}, {id:"ID.002/BLOK.U/IMN 03/2026",amt:541,grade:0}, {id:"ID.018/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.015/BLOK.S/IMN 01/2026",amt:1164,grade:1.6}, {id:"ID.017/BLOK.S/IMN 01/2026",amt:1180,grade:1.67}, {id:"ID.014/BLOK.S/IMN 01/2026",amt:1181,grade:1.71}, {id:"ID.020/BLOK.S/IMN 01/2026",amt:1181,grade:1.72}],totalWMT:10521,grade:1.2909,status:"deficit",finalized:false},
+{no:10,shipDate:"2026-08-02",bargeName:"",tugboatName:"",sources:[{id:"ID.029/BLOK.S/IMN 01/2026",amt:1181,grade:1.7875}, {id:"ID.026/BLOK.S/IMN 01/2026",amt:1181,grade:1.5325}, {id:"ID.010/BLOK.S/IMN 01/2026",amt:1232,grade:1.22}, {id:"ID.004/BLOK.U/IMN 03/2026",amt:1082,grade:1.29}, {id:"ID.011/BLOK.U/IMN 02/2026",amt:218,grade:0.93}, {id:"ID.002/BLOK.S/IMN 02/2026",amt:175,grade:1.09}, {id:"ID.009/BLOK.S/IMN 01/2026",amt:1180,grade:1.18}, {id:"ID.016/BLOK.S/IMN 01/2026",amt:1181,grade:1.49}, {id:"ID.005/BLOK.S/IMN 01/2026",amt:309,grade:1.25}, {id:"ID.001/BLOK.U/IMN 03/2026",amt:1082,grade:1.27}, {id:"ID.019/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.020/BLOK.U/IMN 02/2026",amt:502,grade:0.92}, {id:"ID.003/BLOK.U/IMN 02/2026",amt:87,grade:1.06}],totalWMT:10591,grade:1.3745,status:"exact",finalized:false},
+{no:11,shipDate:"2026-08-04",bargeName:"",tugboatName:"",sources:[{id:"ID.024/BLOK.S/IMN 01/2026",amt:1181,grade:1.835}, {id:"ID.002/BLOK.S/IMN 01/2026",amt:680,grade:1.1}, {id:"ID.016/BLOK.U/IMN 02/2026",amt:743,grade:1.19}, {id:"ID.012/BLOK.U/IMN 02/2026",amt:240,grade:1.03}, {id:"ID.006/BLOK.S/IMN 01/2026",amt:1181,grade:1.47}, {id:"ID.003/BLOK.S/IMN 02/2026",amt:655,grade:0.99}, {id:"ID.022/BLOK.S/IMN 01/2026",amt:1181,grade:1.6375}, {id:"ID.003/BLOK.U/IMN 03/2026",amt:659,grade:1.15}, {id:"ID.004/BLOK.S/IMN 02/2026",amt:808,grade:1.16}, {id:"ID.025/BLOK.S/IMN 01/2026",amt:1181,grade:1.635}, {id:"ID.005/BLOK.S/IMN 02/2026",amt:655,grade:1.02}, {id:"ID.001/BLOK.S/IMN 02/2026",amt:743,grade:1.05}, {id:"ID.027/BLOK.S/IMN 01/2026",amt:650,grade:1.57}],totalWMT:10557,grade:1.3697,status:"exact",finalized:false},
+{no:12,shipDate:"2026-08-06",bargeName:"",tugboatName:"",sources:[{id:"ID.021/BLOK.U/IMN 02/2026",amt:349,grade:0.78}, {id:"ID.022/BLOK.U/IMN 02/2026",amt:546,grade:0.85}, {id:"ID.015/BLOK.U/IMN 02/2026",amt:393,grade:0.92}, {id:"ID.009/BLOK.U/IMN 02/2026",amt:437,grade:0.89}, {id:"ID.023/BLOK.U/IMN 02/2026",amt:328,grade:0.87}, {id:"ID.019/BLOK.U/IMN 02/2026",amt:699,grade:0.93}, {id:"D-422 AMR-IMN",amt:250,grade:0.75}, {id:"ID.006/BLOK.U/IMN 02/2026",amt:218,grade:1.03}, {id:"ID.017/BLOK.U/IMN 02/2026",amt:393,grade:1.03}, {id:"ID.006/BLOK.S/IMN 02/2026",amt:480,grade:1.21}, {id:"ID.002/BLOK.U/IMN 03/2026",amt:541,grade:1.54}, {id:"ID.018/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.015/BLOK.S/IMN 01/2026",amt:1164,grade:1.6}, {id:"ID.017/BLOK.S/IMN 01/2026",amt:1180,grade:1.67}, {id:"ID.014/BLOK.S/IMN 01/2026",amt:1181,grade:1.71}, {id:"ID.020/BLOK.S/IMN 01/2026",amt:1181,grade:1.72}],totalWMT:10521,grade:1.3701,status:"exact",finalized:false},
 ];
 
 /* ----------------------------- helpers ----------------------------- */
@@ -1465,7 +1470,7 @@ function StockTab({ domes }) {
 
 /* ----------------------------- Barging Plan tab ----------------------------- */
 
-function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge }) {
+function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus }) {
   const [open, setOpen] = useState(false);
   const [addDome, setAddDome] = useState("");
   const [addAmt, setAddAmt] = useState("");
@@ -1636,6 +1641,9 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
           <div className="barge-row-actions">
             <button className={`btn-toggle ${barge.finalized ? "btn-toggle-on" : ""}`} onClick={() => onFinalize(barge.no)}>
               {barge.finalized ? <><Unlock size={13} /> Reopen</> : <><Lock size={13} /> Finalize</>}
+            </button>
+            <button className="btn-status" onClick={() => onCheckStatus(barge)}>
+              <AlertTriangle size={13} /> Check Status
             </button>
             <button className="btn-export" onClick={() => onExportBarge(barge)}>
               <FileDown size={13} /> Export
@@ -2181,6 +2189,104 @@ function printFitToPage(elementId) {
  * "Print / Save as PDF" uses the browser's print dialog against
  * the shared .print-area mechanism.
  * ============================================================ */
+/* ============================================================
+ * BargeStatusModal — proactive, read-only diagnostic for a barge.
+ * Two independent checks:
+ *  1. Stock deficit — would finalizing this barge (or did finalizing it,
+ *     if already finalized) require any dome to drop below zero?
+ *  2. Lab data completeness — does any source dome have a 0% value for
+ *     Ni, Fe, Co, SiO2, MgO, Al2O3, or Si:Mg, meaning it hasn't been lab
+ *     assayed yet and the stock database needs updating.
+ * Purely informational — no action is taken here. Finalizing itself no
+ * longer blocks on this; use this modal beforehand to review first.
+ * ============================================================ */
+function BargeStatusModal({ barge, domes, onClose }) {
+  const domesById = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
+
+  const stockIssues = useMemo(() => {
+    if (barge.finalized) {
+      // Already finalized — show what deficit adjustment (if any) was applied at the time.
+      const adj = barge.stockAdjustments || {};
+      return Object.entries(adj).map(([domeId, deficit]) => ({ domeId, deficit, historical: true }));
+    }
+    // Still a draft — check whether finalizing right now would push any dome negative.
+    const issues = [];
+    barge.sources.forEach((s) => {
+      const d = domesById[s.id];
+      if (d && s.amt > d.stock) {
+        issues.push({ domeId: s.id, current: d.stock, requested: s.amt, deficit: s.amt - d.stock, historical: false });
+      }
+    });
+    return issues;
+  }, [barge, domesById]);
+
+  const labIssues = useMemo(() => {
+    const issues = [];
+    barge.sources.forEach((s) => {
+      const d = domesById[s.id];
+      if (!d) return;
+      const zeroFields = LAB_FIELDS.filter(([key]) => (d[key] || 0) === 0).map(([, label]) => label);
+      if (zeroFields.length) issues.push({ domeId: s.id, fields: zeroFields });
+    });
+    return issues;
+  }, [barge, domesById]);
+
+  const noIssues = stockIssues.length === 0 && labIssues.length === 0;
+
+  return (
+    <div className="validation-modal">
+      <div className="validation-panel glass">
+        <div className="validation-head">
+          <AlertTriangle size={20} style={{ color: noIssues ? "#4ADE80" : "#F87171" }} />
+          <span>Barge #{barge.no} Status Check</span>
+          <button className="validation-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="validation-body">
+          {noIssues && (
+            <div className="status-ok">
+              <CheckCircle2 size={16} /> No stock deficits and all source domes have lab data recorded.
+            </div>
+          )}
+
+          <div className="status-section-title" style={{ color: "#F87171" }}>
+            <AlertTriangle size={13} /> Stock deficit {barge.finalized ? "(applied at finalize)" : "(if finalized now)"}
+          </div>
+          {stockIssues.length === 0 && <p style={{ marginBottom: 12 }}>None.</p>}
+          {stockIssues.length > 0 && (
+            <div className="violations-list">
+              {stockIssues.map((v) => (
+                <div key={v.domeId} className="violation-item">
+                  <span className="violation-dome">{v.domeId}</span>
+                  <span className="violation-detail">
+                    {v.historical
+                      ? `This dome was set to 0 remaining when finalized — deficit of ${fmt(v.deficit)} WMT.`
+                      : `Current: ${fmt(v.current)} WMT | Requested: ${fmt(v.requested)} WMT | Deficit: ${fmt(v.deficit)} WMT`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="status-section-title" style={{ color: "#FBBF24" }}>
+            <AlertTriangle size={13} /> Missing lab data
+          </div>
+          {labIssues.length === 0 && <p style={{ marginBottom: 0 }}>None.</p>}
+          {labIssues.length > 0 && (
+            <div className="lab-list">
+              {labIssues.map((v) => (
+                <div key={v.domeId} className="lab-item">
+                  <span className="lab-dome">{v.domeId}</span>
+                  <span className="lab-detail">{v.fields.join(", ")} showing 0% — update the stock database with the lab result.</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BargeExportModal({ barge, domesById, onClose }) {
   const todayISO = new Date().toISOString().slice(0, 10);
   const sources = [...(barge.sources || [])].sort((a, b) => b.amt - a.amt);
@@ -2314,7 +2420,8 @@ export default function IntegraDashboard() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [barges, setBarges] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [validationAlert, setValidationAlert] = useState(null); // { bargeNo, violations: [{domeId, current, requested}] }
+  const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
+  const [pendingFinalize, setPendingFinalize] = useState(null); // { bargeNo, violations } awaiting confirm/cancel
   const [invoiceBarge, setInvoiceBarge] = useState(null); // barge object currently being invoiced, or null
   const [exportBarge, setExportBarge] = useState(null); // barge object currently being exported, or null
   const domesByIdTop = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
@@ -2344,34 +2451,19 @@ export default function IntegraDashboard() {
   const resetDefaults = () => { setDomes(withInitialStock(DEFAULT_DOMES)); setSettings(DEFAULT_SETTINGS); setBarges(DEFAULT_BARGES); };
 
   // finalize / reopen actually mutates the master stock here, since it needs setDomes
-  const toggleFinalize = (no, confirmedAdjustment = false) => {
+  // Does the actual state mutation for finalize/reopen — unconditional, no checks.
+  // Called either directly (no deficit) or after explicit confirmation (deficit present).
+  const applyFinalizeOrReopen = (no) => {
     const barge = barges.find((b) => b.no === no);
     if (!barge) return;
     const sign = barge.finalized ? 1 : -1; // reopening adds back; finalizing subtracts
 
-    // VALIDATION: Before finalizing, check if any dome would go negative. If so, stop
-    // and ask for explicit confirmation rather than silently blocking or silently
-    // adjusting — the person needs to see exactly which domes are short before deciding.
-    if (sign === -1 && !confirmedAdjustment) {
-      const violations = [];
-      barge.sources.forEach((s) => {
-        const dome = domes.find((d) => d.id === s.id);
-        if (dome && (dome.stock - s.amt) < 0) {
-          violations.push({ domeId: s.id, current: dome.stock, requested: s.amt });
-        }
-      });
-      if (violations.length > 0) {
-        setValidationAlert({ bargeNo: no, violations });
-        return; // wait for explicit confirm/cancel from the alert modal
-      }
-    }
-
     if (sign === -1) {
       // Finalizing: subtract normally where stock covers it. Where it doesn't (only
-      // possible after explicit confirmation), clamp that dome to zero rather than
-      // negative, and bump its initialStock by the shortfall so the Stock page's
-      // ledger stays consistent. The exact shortfall per dome is recorded on the barge
-      // itself so reopening can reverse precisely this adjustment, not a guess.
+      // reachable after explicit confirmation via the alert modal), clamp that dome to
+      // zero rather than negative, and bump its initialStock by the shortfall so the
+      // Stock page's ledger stays consistent. The exact shortfall per dome is recorded
+      // on the barge itself so reopening can reverse precisely this adjustment.
       const adjustments = {};
       setDomes((prev) => prev.map((d) => {
         const used = barge.sources.filter((s) => s.id === d.id).reduce((s, x) => s + x.amt, 0);
@@ -2398,7 +2490,45 @@ export default function IntegraDashboard() {
       }));
       setBarges((prev) => prev.map((b) => b.no === no ? { ...b, finalized: false, stockAdjustments: undefined } : b));
     }
-    setValidationAlert(null);
+    setPendingFinalize(null);
+  };
+
+  // Entry point from the Finalize button: checks for a stock deficit first. If found,
+  // stop and show a confirmation modal rather than finalizing (or silently adjusting)
+  // right away — the person needs to see exactly which domes are short before deciding.
+  const toggleFinalize = (no) => {
+    const barge = barges.find((b) => b.no === no);
+    if (!barge) return;
+    const sign = barge.finalized ? 1 : -1;
+
+    if (sign === -1) {
+      const violations = [];
+      barge.sources.forEach((s) => {
+        const dome = domes.find((d) => d.id === s.id);
+        if (dome && s.amt > dome.stock) {
+          violations.push({ domeId: s.id, current: dome.stock, requested: s.amt });
+        }
+      });
+
+      // Also flag any source dome still missing lab data (0% on any assay field).
+      // This never blocks finalizing — same as the stock deficit case, it's a
+      // confirm-and-proceed alert, since the physical barge may already be loaded
+      // and shipped before the lab result comes back. The alert exists so the person
+      // is reminded to go update the stock database once the real assay is in.
+      const labIssues = [];
+      barge.sources.forEach((s) => {
+        const dome = domes.find((d) => d.id === s.id);
+        if (!dome) return;
+        const zeroFields = LAB_FIELDS.filter(([key]) => (dome[key] || 0) === 0).map(([, label]) => label);
+        if (zeroFields.length) labIssues.push({ domeId: s.id, fields: zeroFields });
+      });
+
+      if (violations.length > 0 || labIssues.length > 0) {
+        setPendingFinalize({ bargeNo: no, violations, labIssues });
+        return; // wait for explicit confirm/cancel from the alert modal
+      }
+    }
+    applyFinalizeOrReopen(no);
   };
 
   const handleImport = (e) => {
@@ -2459,27 +2589,56 @@ export default function IntegraDashboard() {
         </div>
       )}
 
-      {validationAlert && (
+      {statusBarge && (
+        <BargeStatusModal barge={statusBarge} domes={domes} onClose={() => setStatusBarge(null)} />
+      )}
+
+      {pendingFinalize && (
         <div className="validation-modal">
           <div className="validation-panel glass">
             <div className="validation-head">
               <AlertTriangle size={20} style={{ color: "#F87171" }} />
-              <span>Inventory Mismatch — Confirm Before Finalizing</span>
-              <button className="validation-close" onClick={() => setValidationAlert(null)}><X size={18} /></button>
+              <span>Confirm Before Finalizing</span>
+              <button className="validation-close" onClick={() => setPendingFinalize(null)}><X size={18} /></button>
             </div>
             <div className="validation-body">
-              <p>Barge #{validationAlert.bargeNo} would cause the following domes to drop below zero. If you finalize anyway, each of these domes will be set to <strong>0 remaining</strong> (not negative), and the ledger will be updated to reflect the shortfall. Please verify with your data provider when convenient:</p>
-              <div className="violations-list">
-                {validationAlert.violations.map((v) => (
-                  <div key={v.domeId} className="violation-item">
-                    <span className="violation-dome">{v.domeId}</span>
-                    <span className="violation-detail">Current: {fmt(v.current)} WMT | Requested: {fmt(v.requested)} WMT | Deficit: {fmt(v.requested - v.current)} WMT</span>
+              {pendingFinalize.violations.length > 0 && (
+                <>
+                  <div className="status-section-title" style={{ color: "#F87171" }}>
+                    <AlertTriangle size={13} /> Stock deficit
                   </div>
-                ))}
-              </div>
+                  <p>Barge #{pendingFinalize.bargeNo} would cause the following domes to drop below zero. If you finalize anyway, each of these domes will be set to <strong>0 remaining</strong> (not negative), and the ledger will be updated to reflect the shortfall. Please verify with your data provider when convenient:</p>
+                  <div className="violations-list">
+                    {pendingFinalize.violations.map((v) => (
+                      <div key={v.domeId} className="violation-item">
+                        <span className="violation-dome">{v.domeId}</span>
+                        <span className="violation-detail">Current: {fmt(v.current)} WMT | Requested: {fmt(v.requested)} WMT | Deficit: {fmt(v.requested - v.current)} WMT</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {pendingFinalize.labIssues.length > 0 && (
+                <>
+                  <div className="status-section-title" style={{ color: "#FBBF24" }}>
+                    <AlertTriangle size={13} /> Missing lab data
+                  </div>
+                  <p>The following domes in Barge #{pendingFinalize.bargeNo} still show 0% on one or more assay fields. You can finalize before the lab result comes back — just make sure to update the stock database with the real values once it does:</p>
+                  <div className="lab-list">
+                    {pendingFinalize.labIssues.map((v) => (
+                      <div key={v.domeId} className="lab-item">
+                        <span className="lab-dome">{v.domeId}</span>
+                        <span className="lab-detail">{v.fields.join(", ")} showing 0%</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
               <div className="validation-actions">
-                <button className="btn-ghost" onClick={() => setValidationAlert(null)}>Cancel</button>
-                <button className="btn-primary btn-danger" onClick={() => { toggleFinalize(validationAlert.bargeNo, true); }}>
+                <button className="btn-ghost" onClick={() => setPendingFinalize(null)}>Cancel</button>
+                <button className="btn-primary btn-danger" onClick={() => applyFinalizeOrReopen(pendingFinalize.bargeNo)}>
                   Confirm &amp; Finalize Anyway
                 </button>
               </div>
@@ -2536,7 +2695,7 @@ export default function IntegraDashboard() {
       <main className="content">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && <StockTab domes={domes} />}
-        {tab === "plan" && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} />}
+        {tab === "plan" && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} />}
         {tab === "timeline" && <TimelineTab domes={domes} settings={settings} barges={barges} />}
       </main>
 
@@ -2551,7 +2710,7 @@ export default function IntegraDashboard() {
 }
 
 /* PlanTabWired: thin wrapper so finalize can reach the top-level setDomes */
-function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOpenInvoice, onExportBarge }) {
+function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOpenInvoice, onExportBarge, onCheckStatus }) {
   const [filter, setFilter] = useState("all");
   const [genCount, setGenCount] = useState(5);
   const [genContractors, setGenContractors] = useState(null); // null = all
@@ -2748,7 +2907,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
         )}
         {filtered.map((b) => (
           <BargeRow key={b.no} barge={b} domesById={domesById} pool={pool}
-            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} />
+            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} onCheckStatus={onCheckStatus} />
         ))}
       </section>
     </div>
@@ -3030,6 +3189,10 @@ const CSS = `
   background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); color: #B7C0CC; font-size: 11px; font-weight: 700;
   cursor: pointer; margin-left: 8px; flex-shrink: 0; }
 .btn-export-mini:hover { background: rgba(255,255,255,.12); }
+.btn-status { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 9px;
+  background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.3); color: #FBBF24; font-size: 12px; font-weight: 700;
+  cursor: pointer; }
+.btn-status:hover { background: rgba(251,191,36,.2); }
 .btn-export { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 9px;
   background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); color: #D6DDE6; font-size: 12px; font-weight: 700;
   cursor: pointer; }
@@ -3108,10 +3271,10 @@ const CSS = `
 .ni-badge-warn { color: #FBBF24; background: rgba(251,191,36,.12); }
 .target-unassayed-note { font-size: 10px; color: #8A97A8; font-style: italic; }
 
-/* Validation alert modal */
+/* Barge status check modal */
 .validation-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 50; background: rgba(0,0,0,.6);
   display: flex; align-items: center; justify-content: center; padding: 20px; }
-.validation-panel { max-width: 480px; max-height: 80vh; overflow-y: auto; padding: 0; border-radius: 20px;
+.validation-panel { max-width: 560px; max-height: 80vh; overflow-y: auto; padding: 0; border-radius: 20px;
   border: 1px solid rgba(248,113,113,.3); }
 .validation-head { display: flex; align-items: center; gap: 12px; padding: 22px; border-bottom: 1px solid rgba(248,113,113,.2);
   background: linear-gradient(135deg, rgba(248,113,113,.08), rgba(255,255,255,.01));
@@ -3125,6 +3288,16 @@ const CSS = `
 .violation-dome { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: #F87171; }
 .violation-detail { font-size: 11px; color: #B7C0CC; line-height: 1.4; }
 .validation-actions { display: flex; gap: 10px; }
+.status-section-title { display: flex; align-items: center; gap: 7px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+  font-size: 12.5px; text-transform: uppercase; letter-spacing: .02em; margin: 18px 0 8px; }
+.status-section-title:first-child { margin-top: 0; }
+.status-ok { display: flex; align-items: center; gap: 8px; padding: 12px; background: rgba(74,222,128,.08);
+  border: 1px solid rgba(74,222,128,.2); border-radius: 10px; color: #4ADE80; font-size: 12px; font-weight: 600; margin-bottom: 12px; }
+.lab-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px;
+  padding: 12px; background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.18); border-radius: 10px; }
+.lab-item { display: flex; flex-direction: column; gap: 4px; }
+.lab-dome { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: #FBBF24; }
+.lab-detail { font-size: 11px; color: #B7C0CC; line-height: 1.4; }
 
 @media (max-width: 900px) {
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
