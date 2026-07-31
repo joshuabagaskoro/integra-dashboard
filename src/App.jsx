@@ -15,10 +15,10 @@ const TODAY = new Date("2026-07-27");
 /* Bump this ONLY when DEFAULT_DOMES or DEFAULT_BARGES is edited with new Excel-sourced
  * data (stock updates, new barge plans). Do NOT change it for feature/UI/logic edits that
  * don't touch the underlying data — that's the whole point of this timestamp. */
-const DATA_LAST_UPDATED = "2026-07-29";
+const DATA_LAST_UPDATED = "2026-07-31";
 
 const DEFAULT_SETTINGS = {
-  bargeSize: 10000,
+  bargeSize: 10500,
   targetGrade: 1.35,
   tolerance: 0.03,
   totalQuota: 618000,
@@ -468,6 +468,10 @@ const DEFAULT_BARGES = [
 {no:6,shipDate:"2026-07-09",bargeName:"BG LINTAS TAMA 3303",tugboatName:"TB LEO POWER 2201",sources:[{id:"DOME 116",amt:496.0,grade:1.65}, {id:"DOME 119",amt:932.0,grade:1.2}, {id:"DOME 129",amt:476.0,grade:1.39}, {id:"DOME 153_1",amt:238.0,grade:1.75}, {id:"DOME 155_1",amt:298.0,grade:1.87}, {id:"DOME 168_1",amt:1369.0,grade:1.3}, {id:"D.18/AMR-S2/IMN-ANM",amt:377.0,grade:1.48}, {id:"D.21/AMR-S2/IMN-ANM",amt:337.0,grade:1.25}, {id:"D.24/AMR-S2/IMN-ANM",amt:397.0,grade:1.38}, {id:"D.26/AMR-S2/IMN-ANM",amt:159.0,grade:1.48}, {id:"D.28/AMR-S2/IMN-ANM",amt:575.0,grade:1.35}, {id:"DM 319 A",amt:595.0,grade:1.05}, {id:"DOME 351",amt:2202.0,grade:1.21}, {id:"DOME 367",amt:218.0,grade:1.48}, {id:"DOME 375",amt:278.0,grade:1.3}, {id:"DOME 393 (D.29/AMR-S.2)",amt:694.0,grade:1.42}, {id:"DOME 392  (D.31/AMR-S.2)",amt:873.0,grade:1.63}],totalWMT:10514.0,grade:1.3574,status:"exact",finalized:true},
 {no:7,shipDate:"2026-07-19",bargeName:"BG MILKY WAY 124",tugboatName:"TB JELAJAH 124",sources:[{id:"DOME 123",amt:1316.0,grade:1.22}, {id:"DOME 145",amt:937.0,grade:1.74}, {id:"DOME 150_1",amt:140.0,grade:2.27}, {id:"DOME 154_1",amt:1355.0,grade:1.71}, {id:"DOME 163_1",amt:598.0,grade:1.28}, {id:"DOME 168_1",amt:120.0,grade:1.3}, {id:"DOME 178_1",amt:239.0,grade:1.33}, {id:"DOME 180_1",amt:159.0,grade:1.23}, {id:"DOME 181_1",amt:159.0,grade:1.13}, {id:"DOME 182_1",amt:259.0,grade:1.26}, {id:"DOME 183_1",amt:219.0,grade:1.24}, {id:"DOME 184_1",amt:120.0,grade:1.24}, {id:"D.01/AMR-N1/IMN-ANM",amt:299.0,grade:1.22}, {id:"D.12/AMR-S2/IMN-ANM",amt:339.0,grade:1.75}, {id:"D.22/AMR-S2/IMN-ANM",amt:359.0,grade:1.38}, {id:"D.28/AMR-S2/IMN-ANM",amt:179.0,grade:1.35}, {id:"DM 303 A",amt:279.0,grade:1.12}, {id:"DM 319 A",amt:219.0,grade:1.05}, {id:"DM 320 A",amt:379.0,grade:1.56}, {id:"DM 333 A",amt:1576.0,grade:1.32}, {id:"DOME 364",amt:100.0,grade:0.96}, {id:"DOME 370",amt:140.0,grade:1.26}, {id:"DOME 371",amt:159.0,grade:1.15}, {id:"DOME 372",amt:120.0,grade:1.22}, {id:"DOME 373",amt:279.0,grade:1.28}, {id:"DOME 376",amt:199.0,grade:1.39}, {id:"DOME 393 (D.29/AMR-S.2)",amt:279.0,grade:1.42}],totalWMT:10526.0,grade:1.4034,status:"excess",finalized:true},
 {no:8,shipDate:"2026-07-21",bargeName:"BG EDWARD 330 5",tugboatName:"TB EDWARD 2000 2",sources:[{id:"DM 319 A",amt:479.0,grade:1.05}, {id:"DOME 369",amt:218.0,grade:1.22}, {id:"DOME 403/IMN/CPK",amt:545.0,grade:1.39}, {id:"DOME 409 IMN AMRUL",amt:305.0,grade:1.5}, {id:"DOME 412",amt:3006.0,grade:1.21}, {id:"ID.003/BLOK.S/IMN 01/2026",amt:1220.0,grade:1.83}, {id:"ID.001/BLOK.S/IMN 01/2026",amt:849.0,grade:1.47}, {id:"ID.004/BLOK.S/IMN 01/2026",amt:936.0,grade:1.42}, {id:"ID.011/BLOK.S/IMN 01/2026",amt:937.0,grade:1.57}, {id:"ID.005/BLOK.S/IMN 01/2026",amt:872.0,grade:1.25}, {id:"ID.007/BLOK.S/IMN 01/2026",amt:653.0,grade:1.32}, {id:"ID.002/BLOK.S/IMN 01/2026",amt:501.0,grade:1.1}],totalWMT:10521.0,grade:1.3692,status:"exact",finalized:true},
+{no:9,shipDate:"2026-07-31",bargeName:"",tugboatName:"",sources:[{id:"ID.001/BLOK.U/IMN 02/2026",amt:437,grade:0.98}, {id:"ID.023/BLOK.S/IMN 01/2026",amt:1181,grade:1.7025}, {id:"D-421 AMR-IMN",amt:1000,grade:0.79}, {id:"ID.004/BLOK.U/IMN 02/2026",amt:218,grade:1.02}, {id:"ID.002/BLOK.U/IMN 02/2026",amt:109,grade:1.05}, {id:"ID.005/BLOK.U/IMN 02/2026",amt:306,grade:1.11}, {id:"ID.007/BLOK.U/IMN 02/2026",amt:459,grade:1.19}, {id:"ID.008/BLOK.S/IMN 01/2026",amt:1181,grade:1.21}, {id:"ID.012/BLOK.S/IMN 01/2026",amt:1198,grade:1.26}, {id:"ID.007/BLOK.S/IMN 01/2026",amt:528,grade:1.32}, {id:"ID.008/BLOK.U/IMN 02/2026",amt:240,grade:1.34}, {id:"ID.021/BLOK.S/IMN 01/2026",amt:1198,grade:1.37}, {id:"ID.004/BLOK.S/IMN 01/2026",amt:245,grade:1.42}, {id:"ID.013/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.028/BLOK.S/IMN 01/2026",amt:1100,grade:2.0425}],totalWMT:10581,grade:1.3725,status:"exact",finalized:false},
+{no:10,shipDate:"2026-08-02",bargeName:"",tugboatName:"",sources:[{id:"ID.029/BLOK.S/IMN 01/2026",amt:1181,grade:1.7875}, {id:"ID.026/BLOK.S/IMN 01/2026",amt:1181,grade:1.5325}, {id:"ID.010/BLOK.S/IMN 01/2026",amt:1232,grade:1.22}, {id:"ID.004/BLOK.U/IMN 03/2026",amt:1082,grade:0}, {id:"ID.011/BLOK.U/IMN 02/2026",amt:218,grade:0.93}, {id:"ID.002/BLOK.S/IMN 02/2026",amt:175,grade:1.09}, {id:"ID.009/BLOK.S/IMN 01/2026",amt:1180,grade:1.18}, {id:"ID.016/BLOK.S/IMN 01/2026",amt:1181,grade:1.49}, {id:"ID.005/BLOK.S/IMN 01/2026",amt:309,grade:1.25}, {id:"ID.001/BLOK.U/IMN 03/2026",amt:1082,grade:0}, {id:"ID.019/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.020/BLOK.U/IMN 02/2026",amt:502,grade:0.92}, {id:"ID.003/BLOK.U/IMN 02/2026",amt:87,grade:1.06}],totalWMT:10591,grade:1.113,status:"deficit",finalized:false},
+{no:11,shipDate:"2026-08-04",bargeName:"",tugboatName:"",sources:[{id:"ID.024/BLOK.S/IMN 01/2026",amt:1181,grade:1.835}, {id:"ID.002/BLOK.S/IMN 01/2026",amt:680,grade:1.1}, {id:"ID.016/BLOK.U/IMN 02/2026",amt:743,grade:1.19}, {id:"ID.012/BLOK.U/IMN 02/2026",amt:240,grade:1.03}, {id:"ID.006/BLOK.S/IMN 01/2026",amt:1181,grade:1.47}, {id:"ID.003/BLOK.S/IMN 02/2026",amt:655,grade:0.99}, {id:"ID.022/BLOK.S/IMN 01/2026",amt:1181,grade:1.6375}, {id:"ID.003/BLOK.U/IMN 03/2026",amt:659,grade:0}, {id:"ID.004/BLOK.S/IMN 02/2026",amt:808,grade:1.16}, {id:"ID.025/BLOK.S/IMN 01/2026",amt:1181,grade:1.635}, {id:"ID.005/BLOK.S/IMN 02/2026",amt:655,grade:1.02}, {id:"ID.001/BLOK.S/IMN 02/2026",amt:743,grade:1.05}, {id:"ID.027/BLOK.S/IMN 01/2026",amt:650,grade:1.57}],totalWMT:10557,grade:1.2979,status:"deficit",finalized:false},
+{no:12,shipDate:"2026-08-06",bargeName:"",tugboatName:"",sources:[{id:"ID.021/BLOK.U/IMN 02/2026",amt:349,grade:0.78}, {id:"ID.022/BLOK.U/IMN 02/2026",amt:546,grade:0.85}, {id:"ID.015/BLOK.U/IMN 02/2026",amt:393,grade:0.92}, {id:"ID.009/BLOK.U/IMN 02/2026",amt:437,grade:0.89}, {id:"ID.023/BLOK.U/IMN 02/2026",amt:328,grade:0.87}, {id:"ID.019/BLOK.U/IMN 02/2026",amt:699,grade:0.93}, {id:"D-422 AMR-IMN",amt:250,grade:0.75}, {id:"ID.006/BLOK.U/IMN 02/2026",amt:218,grade:1.03}, {id:"ID.017/BLOK.U/IMN 02/2026",amt:393,grade:1.03}, {id:"ID.006/BLOK.S/IMN 02/2026",amt:480,grade:1.21}, {id:"ID.002/BLOK.U/IMN 03/2026",amt:541,grade:0}, {id:"ID.018/BLOK.S/IMN 01/2026",amt:1181,grade:1.59}, {id:"ID.015/BLOK.S/IMN 01/2026",amt:1164,grade:1.6}, {id:"ID.017/BLOK.S/IMN 01/2026",amt:1180,grade:1.67}, {id:"ID.014/BLOK.S/IMN 01/2026",amt:1181,grade:1.71}, {id:"ID.020/BLOK.S/IMN 01/2026",amt:1181,grade:1.72}],totalWMT:10521,grade:1.2909,status:"deficit",finalized:false},
 ];
 
 /* ----------------------------- helpers ----------------------------- */
@@ -2340,13 +2344,15 @@ export default function IntegraDashboard() {
   const resetDefaults = () => { setDomes(withInitialStock(DEFAULT_DOMES)); setSettings(DEFAULT_SETTINGS); setBarges(DEFAULT_BARGES); };
 
   // finalize / reopen actually mutates the master stock here, since it needs setDomes
-  const toggleFinalize = (no) => {
+  const toggleFinalize = (no, confirmedAdjustment = false) => {
     const barge = barges.find((b) => b.no === no);
     if (!barge) return;
     const sign = barge.finalized ? 1 : -1; // reopening adds back; finalizing subtracts
-    
-    // VALIDATION: Before finalizing, check if any dome would go negative
-    if (sign === -1) { // only validate on finalize, not reopen
+
+    // VALIDATION: Before finalizing, check if any dome would go negative. If so, stop
+    // and ask for explicit confirmation rather than silently blocking or silently
+    // adjusting — the person needs to see exactly which domes are short before deciding.
+    if (sign === -1 && !confirmedAdjustment) {
       const violations = [];
       barge.sources.forEach((s) => {
         const dome = domes.find((d) => d.id === s.id);
@@ -2356,15 +2362,43 @@ export default function IntegraDashboard() {
       });
       if (violations.length > 0) {
         setValidationAlert({ bargeNo: no, violations });
-        return; // block finalization
+        return; // wait for explicit confirm/cancel from the alert modal
       }
     }
-    
-    setDomes((prev) => prev.map((d) => {
-      const used = barge.sources.filter((s) => s.id === d.id).reduce((s, x) => s + x.amt, 0);
-      return used > 0 ? { ...d, stock: Math.max(0, d.stock + sign * used) } : d;
-    }));
-    setBarges((prev) => prev.map((b) => b.no === no ? { ...b, finalized: !b.finalized } : b));
+
+    if (sign === -1) {
+      // Finalizing: subtract normally where stock covers it. Where it doesn't (only
+      // possible after explicit confirmation), clamp that dome to zero rather than
+      // negative, and bump its initialStock by the shortfall so the Stock page's
+      // ledger stays consistent. The exact shortfall per dome is recorded on the barge
+      // itself so reopening can reverse precisely this adjustment, not a guess.
+      const adjustments = {};
+      setDomes((prev) => prev.map((d) => {
+        const used = barge.sources.filter((s) => s.id === d.id).reduce((s, x) => s + x.amt, 0);
+        if (used <= 0) return d;
+        if (d.stock < used) {
+          const deficit = used - d.stock;
+          adjustments[d.id] = deficit;
+          const priorInitial = d.initialStock !== undefined ? d.initialStock : d.stock;
+          return { ...d, stock: 0, initialStock: priorInitial + deficit };
+        }
+        return { ...d, stock: d.stock - used };
+      }));
+      setBarges((prev) => prev.map((b) => b.no === no ? { ...b, finalized: true, stockAdjustments: adjustments } : b));
+    } else {
+      // Reopening: reverse exactly what finalize did, including any deficit adjustment
+      // that was applied — not just adding the barged amount back blindly.
+      const adjustments = barge.stockAdjustments || {};
+      setDomes((prev) => prev.map((d) => {
+        const used = barge.sources.filter((s) => s.id === d.id).reduce((s, x) => s + x.amt, 0);
+        if (used <= 0) return d;
+        const deficit = adjustments[d.id] || 0;
+        const priorInitial = d.initialStock !== undefined ? d.initialStock : d.stock;
+        return { ...d, stock: Math.max(0, d.stock + used - deficit), initialStock: priorInitial - deficit };
+      }));
+      setBarges((prev) => prev.map((b) => b.no === no ? { ...b, finalized: false, stockAdjustments: undefined } : b));
+    }
+    setValidationAlert(null);
   };
 
   const handleImport = (e) => {
@@ -2430,11 +2464,11 @@ export default function IntegraDashboard() {
           <div className="validation-panel glass">
             <div className="validation-head">
               <AlertTriangle size={20} style={{ color: "#F87171" }} />
-              <span>Inventory Mismatch — Cannot Finalize</span>
+              <span>Inventory Mismatch — Confirm Before Finalizing</span>
               <button className="validation-close" onClick={() => setValidationAlert(null)}><X size={18} /></button>
             </div>
             <div className="validation-body">
-              <p>Barge #{validationAlert.bargeNo} would cause the following domes to drop below zero. Please verify dome stock data with your data provider:</p>
+              <p>Barge #{validationAlert.bargeNo} would cause the following domes to drop below zero. If you finalize anyway, each of these domes will be set to <strong>0 remaining</strong> (not negative), and the ledger will be updated to reflect the shortfall. Please verify with your data provider when convenient:</p>
               <div className="violations-list">
                 {validationAlert.violations.map((v) => (
                   <div key={v.domeId} className="violation-item">
@@ -2444,7 +2478,10 @@ export default function IntegraDashboard() {
                 ))}
               </div>
               <div className="validation-actions">
-                <button className="btn-primary" onClick={() => setValidationAlert(null)}>Dismiss &amp; Update Stock</button>
+                <button className="btn-ghost" onClick={() => setValidationAlert(null)}>Cancel</button>
+                <button className="btn-primary btn-danger" onClick={() => { toggleFinalize(validationAlert.bargeNo, true); }}>
+                  Confirm &amp; Finalize Anyway
+                </button>
               </div>
             </div>
           </div>
@@ -2807,6 +2844,8 @@ const CSS = `
 .btn-primary { display: flex; align-items: center; gap: 6px; background: rgba(227,95,12,.16); border: 1px solid rgba(227,95,12,.4);
   color: #E35F0C; font-size: 12.5px; font-weight: 700; padding: 9px 14px; border-radius: 10px; cursor: pointer; transition: all .15s; white-space: nowrap; }
 .btn-primary:hover { background: rgba(227,95,12,.26); }
+.btn-danger { background: rgba(248,113,113,.16); border-color: rgba(248,113,113,.45); color: #F87171; }
+.btn-danger:hover { background: rgba(248,113,113,.28); }
 
 .ring-wrap { position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .ring-outer { border-radius: 50%; display: flex; align-items: center; justify-content: center; }
