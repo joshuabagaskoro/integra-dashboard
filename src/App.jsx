@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
   Layers, ChevronDown, RotateCcw, Gauge, Upload, X,
-  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown
+  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -10,7 +10,7 @@ import * as XLSX from "xlsx";
 /* ----------------------------- constants ----------------------------- */
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const TODAY = new Date("2026-07-27");
+const TODAY = new Date();
 
 /* Bump this ONLY when DEFAULT_DOMES or DEFAULT_BARGES is edited with new Excel-sourced
  * data (stock updates, new barge plans). Do NOT change it for feature/UI/logic edits that
@@ -36,6 +36,26 @@ const PRODUCTION_TARGETS_2026 = {
 // Check Status modal. Al2O3 deliberately excluded — it's never actually collected by
 // the lab, so checking it would falsely flag every single dome.
 const LAB_FIELDS = [["ni", "Ni"], ["fe", "Fe"], ["co", "Co"], ["sio2", "SiO2"], ["mgo", "MgO"], ["simg", "Si:Mg"]];
+
+// Client-side credentials — fine for an internal team tool, not for external/production
+// use. Session token lives in sessionStorage (clears on browser close) rather than
+// localStorage, per the "logout when browser closes" requirement.
+const CREDENTIALS = {
+  operation: { password: "opsintegra2026", role: "operation" },
+  integra: { password: "admin-imn", role: "admin" },
+};
+const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+
+const DEFAULT_HMA_HISTORY = [
+  { date: "2026-07-15", price: 53.60, unit: "USD/WMT" },
+  { date: "2026-07-01", price: 56.58, unit: "USD/WMT" },
+  { date: "2026-06-15", price: 59.52, unit: "USD/WMT" },
+];
+const DEFAULT_EXCHANGE_RATE_HISTORY = [
+  { date: "2026-07-27", rate: 15500, source: "XE.com" },
+  { date: "2026-07-26", rate: 15480, source: "XE.com" },
+];
+const ROYALTY_TARIFF = 0.15; // flat 15% — see build note about bracket-based tariffs
 
 const PALETTE = [
   "#22D3B8", "#F5B841", "#9B8CFF", "#FF7A7A", "#60A5FA", "#4ADE80",
@@ -1727,6 +1747,170 @@ function TimelineTab({ barges, settings }) {
   );
 }
 
+/* ============================================================
+ * FinancialsTab — admin-only royalty/PNBP calculator.
+ * Royalty (IDR) = HMA price (USD/WMT) x Exchange Rate (IDR/USD) x Barge Qty (WMT) x 15% tariff.
+ * Each barge uses the HMA/rate that was in effect on ITS OWN shipDate, not today's —
+ * that's the whole point of keeping history instead of a single current price.
+ * NOTE: tariff is a flat 15% here per the build spec. Real PNBP/royalty tariffs can vary
+ * by HMA price bracket under Indonesian mining regulation — flag this if precise bracket
+ * rules are needed later; flat-rate is intentionally the simple first pass.
+ * ============================================================ */
+function FinancialsTab({ barges, hmaHistory, setHmaHistory, exchangeRateHistory, setExchangeRateHistory,
+  getHmaPriceOnDate, getExchangeRateOnDate, calculateRoyalty, getHmaTrendPercent, getExRateTrendPercent, exportFinancialData }) {
+
+  const updateHma = () => {
+    const newPrice = prompt("Enter new HMA price (USD/WMT):", hmaHistory[0]?.price);
+    if (newPrice && !isNaN(parseFloat(newPrice))) {
+      const today = new Date().toISOString().split("T")[0];
+      setHmaHistory((prev) => [{ date: today, price: parseFloat(newPrice), unit: "USD/WMT" }, ...prev].slice(0, 180));
+    }
+  };
+  const updateRate = () => {
+    const newRate = prompt("Enter new exchange rate (IDR/USD):", exchangeRateHistory[0]?.rate);
+    if (newRate && !isNaN(parseInt(newRate))) {
+      const today = new Date().toISOString().split("T")[0];
+      setExchangeRateHistory((prev) => [{ date: today, rate: parseInt(newRate), source: "Manual" }, ...prev].slice(0, 180));
+    }
+  };
+
+  const hmaTrend = getHmaTrendPercent();
+  const exTrend = getExRateTrendPercent();
+  const sortedBarges = [...barges].sort((a, b) => a.no - b.no);
+  const totalRoyalty = barges.reduce((sum, b) => sum + calculateRoyalty(b.shipDate, b.totalWMT || 0), 0);
+
+  return (
+    <div className="stack">
+      <section className="glass panel">
+        <div className="panel-head"><DollarSign size={16} /><span>Royalty &amp; PNBP Calculator</span></div>
+        <p className="note" style={{ marginBottom: 16 }}>Royalty = HMA price x Exchange Rate x Qty x 15% tariff (flat rate — see build note on price-bracket tariffs).</p>
+
+        <div className="financial-cards-row">
+          <div className="financial-card">
+            <div className="card-header">
+              <span>Nickel Benchmark Price (HMA)</span>
+              <span className="card-unit">1.4% Ni | USD/WMT</span>
+            </div>
+            <div className="card-main-value">${hmaHistory[0]?.price?.toFixed(2) || "—"}</div>
+            <div className="card-meta">
+              <div className="meta-item"><span className="meta-label">Last Updated</span><span className="meta-value">{hmaHistory[0]?.date || "—"}</span></div>
+              <div className="meta-item">
+                <span className="meta-label">Change vs. Previous</span>
+                <span className={`meta-value trend ${hmaTrend >= 0 ? "up" : "down"}`}>{hmaTrend >= 0 ? "↑" : "↓"} {Math.abs(hmaTrend).toFixed(2)}%</span>
+              </div>
+            </div>
+            <div className="card-actions"><button onClick={updateHma} className="btn-card-action">Update Price</button></div>
+          </div>
+
+          <div className="financial-card">
+            <div className="card-header">
+              <span>USD to IDR Exchange Rate</span>
+              <span className="card-unit">Bank Indonesia / XE.com</span>
+            </div>
+            <div className="card-main-value">{exchangeRateHistory[0]?.rate?.toLocaleString("id-ID") || "—"} IDR</div>
+            <div className="card-meta">
+              <div className="meta-item"><span className="meta-label">Last Updated</span><span className="meta-value">{exchangeRateHistory[0]?.date || "—"}</span></div>
+              <div className="meta-item">
+                <span className="meta-label">Change vs. Previous</span>
+                <span className={`meta-value trend ${exTrend >= 0 ? "up" : "down"}`}>{exTrend >= 0 ? "↑" : "↓"} {Math.abs(exTrend).toFixed(2)}%</span>
+              </div>
+            </div>
+            <div className="card-actions"><button onClick={updateRate} className="btn-card-action">Update Rate</button></div>
+          </div>
+        </div>
+      </section>
+
+      <section className="glass panel">
+        <div className="panel-head" style={{ justifyContent: "space-between" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><DollarSign size={16} /> Royalty by Barge</span>
+          <button onClick={exportFinancialData} className="btn-export" title="Export financial data">
+            <FileUp size={14} /> Export Data
+          </button>
+        </div>
+        <div className="royalty-table">
+          <div className="royalty-header">
+            <div>Barge No.</div><div>Date</div><div>Qty (WMT)</div><div>HMA (USD)</div><div>ExRate (IDR)</div><div>Royalty (IDR)</div><div>Status</div>
+          </div>
+          {sortedBarges.length === 0 && <div className="log-empty">No barges yet.</div>}
+          {sortedBarges.map((barge) => {
+            const royalty = calculateRoyalty(barge.shipDate, barge.totalWMT || 0);
+            return (
+              <div key={barge.no} className="royalty-row">
+                <div className="cell">#{barge.no}</div>
+                <div className="cell">{barge.shipDate || "—"}</div>
+                <div className="cell">{fmt(barge.totalWMT)}</div>
+                <div className="cell">${getHmaPriceOnDate(barge.shipDate).toFixed(2)}</div>
+                <div className="cell">{fmt(getExchangeRateOnDate(barge.shipDate))}</div>
+                <div className="cell highlight">{royalty.toLocaleString("id-ID", { maximumFractionDigits: 0 })}</div>
+                <div className="cell status">{barge.finalized ? "Finalized" : "Draft"}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="royalty-summary">
+          <strong>Total Royalty (All Barges):</strong>
+          <span className="total">{totalRoyalty.toLocaleString("id-ID", { maximumFractionDigits: 0 })} IDR</span>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* ============================================================
+ * LoginLogTab — admin-only view of all login attempts.
+ * ============================================================ */
+function LoginLogTab({ loginHistory }) {
+  const successCount = loginHistory.filter((l) => l.status === "Successful").length;
+  const failedCount = loginHistory.filter((l) => l.status === "Failed").length;
+
+  return (
+    <div className="stack">
+      <section className="glass panel">
+        <div className="panel-head"><History size={16} /><span>Login History</span></div>
+        <p className="note" style={{ marginBottom: 16 }}>All login attempts (successful &amp; failed) are tracked here.</p>
+
+        <div className="log-table">
+          <div className="log-header-row">
+            <div className="log-cell log-cell-time">Timestamp</div>
+            <div className="log-cell log-cell-user">Username</div>
+            <div className="log-cell log-cell-status">Status</div>
+          </div>
+          {loginHistory.length === 0 && <div className="log-empty">No login history yet.</div>}
+          {loginHistory.map((entry, idx) => {
+            const timeStr = new Date(entry.timestamp).toLocaleString("en-US", {
+              year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+            });
+            return (
+              <div key={idx} className={`log-row ${entry.status === "Successful" ? "log-success" : "log-failed"}`}>
+                <div className="log-cell log-cell-time">{timeStr}</div>
+                <div className="log-cell log-cell-user">{entry.username}</div>
+                <div className="log-cell log-cell-status">
+                  <span className={`status-badge ${entry.status === "Successful" ? "badge-success" : "badge-failed"}`}>{entry.status}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mini-stats-row">
+          <div className="mini-stat-card">
+            <div className="mini-stat-label">Total Login Attempts</div>
+            <div className="mini-stat-value">{loginHistory.length}</div>
+          </div>
+          <div className="mini-stat-card">
+            <div className="mini-stat-label">Successful Logins</div>
+            <div className="mini-stat-value mini-stat-success">{successCount}</div>
+          </div>
+          <div className="mini-stat-card">
+            <div className="mini-stat-label">Failed Attempts</div>
+            <div className="mini-stat-value mini-stat-failed">{failedCount}</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 /* ----------------------------- main app ----------------------------- */
 
 
@@ -2200,6 +2384,100 @@ function printFitToPage(elementId) {
  * Purely informational — no action is taken here. Finalizing itself no
  * longer blocks on this; use this modal beforehand to review first.
  * ============================================================ */
+/* ============================================================
+ * LoginScreen — full-screen gate shown before isLoggedIn is true.
+ * ============================================================ */
+/* Shared brand mark — same geometric logo used in the topbar, extracted so the login
+ * and welcome screens use the actual brand identity instead of a generic placeholder. */
+function BrandMark({ size = 40 }) {
+  return (
+    <svg width={size} height={size * (46 / 40)} viewBox="0 0 700 820" className="brand-logo">
+      <rect x="62" y="57" width="185" height="62" fill="#E35F0C" />
+      <rect x="62" y="167" width="185" height="63" fill="#E35F0C" />
+      <rect x="62" y="278" width="587" height="62" fill="#BFB12A" />
+      <rect x="62" y="278" width="66" height="299" fill="#BFB12A" />
+      <rect x="174" y="387" width="475" height="62" fill="#BFB12A" />
+      <rect x="174" y="387" width="73" height="190" fill="#BFB12A" />
+      <rect x="389" y="501" width="59" height="185" fill="#E35F0C" />
+      <rect x="62" y="624" width="386" height="62" fill="#E35F0C" />
+      <rect x="495" y="501" width="65" height="294" fill="#E35F0C" />
+      <rect x="62" y="734" width="498" height="61" fill="#E35F0C" />
+    </svg>
+  );
+}
+
+function LoginScreen({ onLogin, error }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onLogin(username, password);
+  };
+
+  return (
+    <div className="login-container">
+      <div className="bg-glow bg-glow-a" />
+      <div className="bg-glow bg-glow-b" />
+      <div className="login-box">
+        <div className="login-panel-brand">
+          <div className="login-panel-brand-pattern" />
+          <div className="login-panel-brand-content">
+            <BrandMark size={48} />
+            <div className="login-panel-brand-name">INTEGRA</div>
+            <div className="login-panel-brand-tag">Nickel Ore Barging<br />Management System</div>
+          </div>
+          <div className="login-panel-brand-foot">PT Integra Mining Nusantara</div>
+        </div>
+
+        <div className="login-panel-form">
+          <div className="login-form-head">
+            <div className="login-form-title">Sign in</div>
+            <div className="login-form-sub">Enter your credentials to access the dashboard</div>
+          </div>
+
+          <form onSubmit={handleSubmit} className="login-form">
+            <div className="form-group">
+              <label htmlFor="username">Username</label>
+              <input id="username" type="text" placeholder="Enter your username" value={username}
+                onChange={(e) => setUsername(e.target.value)} autoComplete="username" className="login-input" />
+            </div>
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <input id="password" type="password" placeholder="Enter your password" value={password}
+                onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" className="login-input" />
+            </div>
+            {error && <div className="login-error">{error}</div>}
+            <button type="submit" className="login-button">Sign In</button>
+          </form>
+
+          <div className="login-footer">
+            <p>PT Integra Mining Nusantara — 2026</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+ * WelcomeScreen — brief full-screen transition shown for 3s after login.
+ * ============================================================ */
+function WelcomeScreen({ username, role }) {
+  return (
+    <div className="welcome-overlay">
+      <div className="bg-glow bg-glow-a" />
+      <div className="bg-glow bg-glow-b" />
+      <div className="welcome-content">
+        <div className="welcome-logo"><BrandMark size={64} /></div>
+        <h1 className="welcome-title">Welcome to Integra OS</h1>
+        <p className="welcome-subtitle">Signed in as <strong>{username}</strong> ({role})</p>
+        <div className="welcome-spinner"></div>
+      </div>
+    </div>
+  );
+}
+
 function BargeStatusModal({ barge, domes, onClose }) {
   const domesById = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
 
@@ -2420,6 +2698,20 @@ export default function IntegraDashboard() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [barges, setBarges] = useState([]);
   const [loaded, setLoaded] = useState(false);
+
+  // Authentication & session
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null); // { username, role }
+  const [loginError, setLoginError] = useState("");
+  const [showWelcome, setShowWelcome] = useState(false);
+  const [loginHistory, setLoginHistory] = useState([]);
+  const isAdmin = currentUser?.role === "admin";
+  const isOperation = currentUser?.role === "operation";
+
+  // Financials (admin-only)
+  const [hmaHistory, setHmaHistory] = useState(DEFAULT_HMA_HISTORY);
+  const [exchangeRateHistory, setExchangeRateHistory] = useState(DEFAULT_EXCHANGE_RATE_HISTORY);
+
   const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
   const [pendingFinalize, setPendingFinalize] = useState(null); // { bargeNo, violations } awaiting confirm/cancel
   const [invoiceBarge, setInvoiceBarge] = useState(null); // barge object currently being invoiced, or null
@@ -2447,6 +2739,150 @@ export default function IntegraDashboard() {
   useEffect(() => { if (loaded) window.storage?.set("integra-domes-v3", JSON.stringify(domes)).catch(() => {}); }, [domes, loaded]);
   useEffect(() => { if (loaded) window.storage?.set("integra-settings-v3", JSON.stringify(settings)).catch(() => {}); }, [settings, loaded]);
   useEffect(() => { if (loaded) window.storage?.set("integra-barges-v3", JSON.stringify(barges)).catch(() => {}); }, [barges, loaded]);
+
+  // Session load on mount. Uses sessionStorage (not localStorage) specifically so the
+  // "logout when browser closes" requirement actually holds — sessionStorage clears
+  // automatically when the tab/browser closes, localStorage does not.
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem("integraSession");
+      if (saved) {
+        const session = JSON.parse(saved);
+        if (Date.now() - session.loginTime < SESSION_MAX_AGE_MS) {
+          setCurrentUser(session.user);
+          setIsLoggedIn(true);
+        } else {
+          sessionStorage.removeItem("integraSession");
+        }
+      }
+    } catch (e) { sessionStorage.removeItem("integraSession"); }
+    try {
+      const savedHistory = localStorage.getItem("integraLoginHistory");
+      if (savedHistory) setLoginHistory(JSON.parse(savedHistory));
+    } catch (e) {}
+  }, []);
+
+  // Re-checks session age on an interval (not just once at mount) so the 1-hour cap
+  // holds even across page reloads — a single mount-time setTimeout would reset every
+  // time the page reloads, letting someone stay logged in indefinitely by refreshing.
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    const check = () => {
+      try {
+        const saved = sessionStorage.getItem("integraSession");
+        if (!saved) return;
+        const session = JSON.parse(saved);
+        if (Date.now() - session.loginTime >= SESSION_MAX_AGE_MS) {
+          sessionStorage.removeItem("integraSession");
+          setCurrentUser(null);
+          setIsLoggedIn(false);
+          alert("Your session has expired. Please log in again.");
+        }
+      } catch (e) {}
+    };
+    const interval = setInterval(check, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [isLoggedIn]);
+
+  const handleLogin = (username, password) => {
+    setLoginError("");
+    const cred = CREDENTIALS[username];
+    const logAttempt = (status) => {
+      const entry = { timestamp: new Date().toISOString(), username: username || "(unknown)", status };
+      setLoginHistory((prev) => {
+        const updated = [entry, ...prev].slice(0, 100);
+        try { localStorage.setItem("integraLoginHistory", JSON.stringify(updated)); } catch (e) {}
+        return updated;
+      });
+    };
+
+    if (!cred || cred.password !== password) {
+      logAttempt("Failed");
+      setLoginError("❌ Invalid username or password. Please try again.");
+      return;
+    }
+
+    const user = { username, role: cred.role };
+    const session = { user, loginTime: Date.now() };
+    try { sessionStorage.setItem("integraSession", JSON.stringify(session)); } catch (e) {}
+    setCurrentUser(user);
+    setIsLoggedIn(true);
+    setShowWelcome(true);
+    logAttempt("Successful");
+    setTimeout(() => setShowWelcome(false), 3000);
+  };
+
+  const handleLogout = () => {
+    try { sessionStorage.removeItem("integraSession"); } catch (e) {}
+    setCurrentUser(null);
+    setIsLoggedIn(false);
+    setLoginError("");
+  };
+
+  // Financials helpers. Fixed from the original build prompt, which referenced
+  // barge.dateCreated/barge.id — neither field exists on this app's barge objects
+  // (they're barge.shipDate and barge.no). As written, every barge would have silently
+  // fallen back to today's price/rate instead of its own historical date.
+  const getHmaPriceOnDate = (targetDate) => {
+    const sorted = [...hmaHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
+    const match = sorted.find((h) => new Date(h.date) <= new Date(targetDate));
+    return match ? match.price : sorted[sorted.length - 1]?.price || 0;
+  };
+  const getExchangeRateOnDate = (targetDate) => {
+    const sorted = [...exchangeRateHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
+    const match = sorted.find((h) => new Date(h.date) <= new Date(targetDate));
+    return match ? match.rate : sorted[sorted.length - 1]?.rate || 15000;
+  };
+  const calculateRoyalty = (bargeDate, qty) => {
+    const hmaPrice = getHmaPriceOnDate(bargeDate);
+    const exRate = getExchangeRateOnDate(bargeDate);
+    return hmaPrice * exRate * qty * ROYALTY_TARIFF;
+  };
+  const getHmaTrendPercent = () => {
+    if (hmaHistory.length < 2) return 0;
+    return ((hmaHistory[0].price - hmaHistory[1].price) / hmaHistory[1].price) * 100;
+  };
+  const getExRateTrendPercent = () => {
+    if (exchangeRateHistory.length < 2) return 0;
+    return ((exchangeRateHistory[0].rate - exchangeRateHistory[1].rate) / exchangeRateHistory[1].rate) * 100;
+  };
+
+  // Auto-fetch today's USD/IDR rate once/day via the /api/fetch-exchange-rate serverless
+  // function (see api/fetch-exchange-rate.js — a separate file, deployed alongside this
+  // one on Vercel). Fails silently outside that deployment (e.g. in local preview),
+  // which is intentional — manual "Update Rate" always remains available as a fallback.
+  useEffect(() => {
+    if (!isAdmin) return;
+    (async () => {
+      try {
+        const today = new Date().toISOString().split("T")[0];
+        if (localStorage.getItem("lastExRateFetch") === today) return;
+        const res = await fetch("/api/fetch-exchange-rate");
+        const data = await res.json();
+        if (data.rate) {
+          setExchangeRateHistory((prev) => [{ date: data.date, rate: data.rate, source: data.source }, ...prev].slice(0, 180));
+          localStorage.setItem("lastExRateFetch", today);
+        }
+      } catch (e) { /* serverless endpoint not available in this context — manual update still works */ }
+    })();
+  }, [isAdmin]);
+
+  const exportFinancialData = () => {
+    const csv = [
+      "Financial Data Export — " + new Date().toISOString(), "",
+      "HMA PRICE HISTORY", "Date,Price (USD/WMT)",
+      ...hmaHistory.map((h) => `${h.date},${h.price}`), "",
+      "EXCHANGE RATE HISTORY", "Date,Rate (IDR/USD),Source",
+      ...exchangeRateHistory.map((e) => `${e.date},${e.rate},${e.source || "manual"}`),
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `integra-financials-${new Date().toISOString().split("T")[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const resetDefaults = () => { setDomes(withInitialStock(DEFAULT_DOMES)); setSettings(DEFAULT_SETTINGS); setBarges(DEFAULT_BARGES); };
 
@@ -2561,6 +2997,28 @@ export default function IntegraDashboard() {
       reader.readAsText(file);
     });
   };
+
+  // Auth gates — placed after all hooks (React's Rules of Hooks require every hook to
+  // run on every render, so these early returns must come after every useState/useEffect
+  // above, not before). Each includes its own <style>{CSS}</style> because these bypass
+  // the main .app wrapper below, which is otherwise the only place the stylesheet is
+  // injected — without this, the login/welcome screens render with zero CSS applied.
+  if (!isLoggedIn) {
+    return (
+      <>
+        <style>{CSS}</style>
+        <LoginScreen onLogin={handleLogin} error={loginError} />
+      </>
+    );
+  }
+  if (showWelcome) {
+    return (
+      <>
+        <style>{CSS}</style>
+        <WelcomeScreen username={currentUser?.username} role={currentUser?.role} />
+      </>
+    );
+  }
 
   return (
     <div className="app">
@@ -2686,9 +3144,14 @@ export default function IntegraDashboard() {
             <NavButton icon={Layers} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} />
             <NavButton icon={Ship} label="Barging Plan" active={tab === "plan"} onClick={() => setTab("plan")} />
             <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} />
+            {isAdmin && <NavButton icon={DollarSign} label="Financials" active={tab === "financials"} onClick={() => setTab("financials")} />}
+            {isAdmin && <NavButton icon={History} label="Login Log" active={tab === "log"} onClick={() => setTab("log")} />}
           </nav>
           <button className="btn-import" onClick={() => setShowImport(!showImport)}><Upload size={14} /> Import</button>
           <button className="btn-ghost" onClick={resetDefaults}><RotateCcw size={13} /></button>
+          <button className="btn-logout" onClick={handleLogout} title={`Log out (${currentUser?.username})`}>
+            <LogOut size={13} /> <span className="btn-logout-label">Logout</span>
+          </button>
         </div>
       </header>
 
@@ -2697,6 +3160,16 @@ export default function IntegraDashboard() {
         {tab === "stock" && <StockTab domes={domes} />}
         {tab === "plan" && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} />}
         {tab === "timeline" && <TimelineTab domes={domes} settings={settings} barges={barges} />}
+        {tab === "financials" && isAdmin && (
+          <FinancialsTab
+            barges={barges} hmaHistory={hmaHistory} setHmaHistory={setHmaHistory}
+            exchangeRateHistory={exchangeRateHistory} setExchangeRateHistory={setExchangeRateHistory}
+            getHmaPriceOnDate={getHmaPriceOnDate} getExchangeRateOnDate={getExchangeRateOnDate}
+            calculateRoyalty={calculateRoyalty} getHmaTrendPercent={getHmaTrendPercent}
+            getExRateTrendPercent={getExRateTrendPercent} exportFinancialData={exportFinancialData}
+          />
+        )}
+        {tab === "log" && isAdmin && <LoginLogTab loginHistory={loginHistory} />}
       </main>
 
       <nav className="nav-mobile">
@@ -2704,6 +3177,8 @@ export default function IntegraDashboard() {
         <NavButton icon={Layers} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} mobile />
         <NavButton icon={Ship} label="Plan" active={tab === "plan"} onClick={() => setTab("plan")} mobile />
         <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} mobile />
+        {isAdmin && <NavButton icon={DollarSign} label="Financials" active={tab === "financials"} onClick={() => setTab("financials")} mobile />}
+        {isAdmin && <NavButton icon={History} label="Log" active={tab === "log"} onClick={() => setTab("log")} mobile />}
       </nav>
     </div>
   );
@@ -3470,5 +3945,151 @@ const CSS = `
    * engine split it (or push just a sliver of it) onto a trailing page. */
   .plan-footer, .inv-footer { page-break-inside: avoid; break-inside: avoid; }
   .plan-table tr { page-break-inside: avoid; break-inside: avoid; }
+}
+
+/* ======================== LOGIN SCREEN ======================== */
+.login-container { position: fixed; inset: 0; background: radial-gradient(circle at 20% 0%, #101826 0%, #070A10 55%, #050709 100%);
+  display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; overflow: hidden; }
+.login-box { position: relative; z-index: 1; width: 100%; max-width: 760px; min-height: 460px; display: flex;
+  border-radius: 24px; overflow: hidden; background: linear-gradient(150deg, rgba(255,255,255,.065), rgba(255,255,255,.015));
+  border: 1px solid rgba(255,255,255,.09); box-shadow: 0 24px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05); }
+
+/* Left: branding panel — same orange/gold geometry as the logo, scaled up as an ambient
+ * background pattern, standing in for the reference's photo panel but built from
+ * Integra's own visual identity instead of generic stock imagery. */
+.login-panel-brand { position: relative; flex: 0 0 42%; padding: 36px 32px; display: flex; flex-direction: column;
+  justify-content: space-between; background: linear-gradient(160deg, #171E29 0%, #0D1219 100%); overflow: hidden; }
+.login-panel-brand-pattern { position: absolute; inset: -20% -30% auto auto; width: 340px; height: 340px;
+  background: radial-gradient(circle, rgba(227,95,12,.18) 0%, transparent 70%); pointer-events: none; }
+.login-panel-brand-pattern::after { content: ""; position: absolute; inset: 60% -40% -40% auto; width: 300px; height: 300px;
+  background: radial-gradient(circle, rgba(191,178,42,.14) 0%, transparent 70%); }
+.login-panel-brand-content { position: relative; z-index: 1; }
+.login-panel-brand-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 22px; letter-spacing: .05em;
+  color: #EAF0F6; margin-top: 18px; }
+.login-panel-brand-tag { font-size: 12.5px; color: #8A97A8; margin-top: 8px; line-height: 1.5; }
+.login-panel-brand-foot { position: relative; z-index: 1; font-size: 10.5px; color: #55606E; letter-spacing: .02em; }
+
+.login-panel-form { flex: 1; padding: 44px 40px; display: flex; flex-direction: column; justify-content: center; }
+.login-form-head { margin-bottom: 28px; }
+.login-form-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 22px; color: #EAF0F6; }
+.login-form-sub { font-size: 12.5px; color: #8A97A8; margin-top: 6px; }
+.login-form { display: flex; flex-direction: column; gap: 16px; }
+.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-group label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: #B7C0CC; }
+.login-input { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); border-radius: 10px;
+  padding: 12px 14px; font-size: 14px; color: #EAF0F6; font-family: 'JetBrains Mono', monospace; box-sizing: border-box; }
+.login-input:focus { outline: none; border-color: rgba(227,95,12,.5); box-shadow: 0 0 0 3px rgba(227,95,12,.12); }
+.login-input::placeholder { color: #667080; }
+.login-error { background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); border-radius: 8px;
+  padding: 10px 12px; color: #FCA5A5; font-size: 12px; font-weight: 500; animation: shake .3s ease-in-out; }
+@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+.login-button { display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #E35F0C, #C94E08);
+  border: none; border-radius: 10px; padding: 13px 16px; font-size: 13px; font-weight: 700; color: #fff; cursor: pointer;
+  text-transform: uppercase; letter-spacing: .05em; margin-top: 8px; font-family: 'Space Grotesk', sans-serif;
+  box-shadow: 0 8px 20px rgba(227,95,12,.25); }
+.login-button:hover { filter: brightness(1.08); }
+.login-footer { text-align: center; margin-top: 24px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.06); }
+.login-footer p { font-size: 10.5px; color: #667080; margin: 0; letter-spacing: .02em; }
+
+/* ======================== WELCOME SCREEN ======================== */
+.welcome-overlay { position: fixed; inset: 0; background: radial-gradient(circle at 20% 0%, #101826 0%, #070A10 55%, #050709 100%);
+  display: flex; align-items: center; justify-content: center; z-index: 1001; animation: fadeIn .3s ease-in-out; overflow: hidden; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.welcome-content { position: relative; z-index: 1; text-align: center; animation: slideUp .5s ease-out; }
+@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+.welcome-logo { display: flex; justify-content: center; margin-bottom: 20px; animation: bounce .6s ease-in-out; filter: drop-shadow(0 4px 16px rgba(227,95,12,.25)); }
+@keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+.welcome-title { font-family: 'Space Grotesk', sans-serif; font-size: 30px; font-weight: 700; color: #EAF0F6; margin: 0 0 8px; letter-spacing: -.5px; }
+.welcome-subtitle { font-size: 13px; color: #B7C0CC; margin: 0 0 28px; }
+.welcome-subtitle strong { color: #E35F0C; }
+.welcome-spinner { width: 34px; height: 34px; border: 3px solid rgba(227,95,12,.2); border-top-color: #E35F0C;
+  border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ======================== LOGOUT BUTTON ======================== */
+.btn-logout { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 9px;
+  background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.3); color: #F87171; font-size: 12px; font-weight: 700; cursor: pointer; }
+.btn-logout:hover { background: rgba(248,113,113,.18); }
+
+/* ======================== FINANCIALS TAB ======================== */
+.financial-cards-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.financial-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); border-radius: 16px;
+  padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; font-size: 11.5px; color: #B7C0CC;
+  font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.card-unit { font-size: 10px; color: #8A97A8; font-weight: 500; }
+.card-main-value { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; color: #E35F0C; }
+.card-meta { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid rgba(255,255,255,.08); border-bottom: 1px solid rgba(255,255,255,.08); }
+.meta-item { display: flex; justify-content: space-between; align-items: center; font-size: 11px; }
+.meta-label { color: #8A97A8; text-transform: uppercase; letter-spacing: .02em; font-weight: 600; }
+.meta-value { font-family: 'JetBrains Mono', monospace; color: #B7C0CC; font-size: 12px; font-weight: 600; }
+.meta-value.trend.up { color: #4ADE80; }
+.meta-value.trend.down { color: #F87171; }
+.card-actions { display: flex; gap: 8px; }
+.btn-card-action { flex: 1; background: rgba(227,95,12,.12); border: 1px solid rgba(227,95,12,.3); border-radius: 8px;
+  color: #E35F0C; font-size: 11px; font-weight: 700; padding: 8px 12px; cursor: pointer; text-transform: uppercase; letter-spacing: .02em; }
+.btn-card-action:hover { background: rgba(227,95,12,.22); }
+
+.royalty-table { background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.08); border-radius: 10px;
+  overflow-x: auto; margin: 16px 0; }
+.royalty-header, .royalty-row { display: grid; grid-template-columns: 70px 100px 90px 90px 110px 150px 90px; gap: 10px; align-items: center; }
+.royalty-header { background: rgba(255,255,255,.06); padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.08);
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; color: #8A97A8; }
+.royalty-row { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; color: #B7C0CC;
+  font-family: 'JetBrains Mono', monospace; }
+.royalty-row:last-child { border-bottom: none; }
+.royalty-row .cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.royalty-row .cell.highlight { color: #E35F0C; font-weight: 700; }
+.royalty-row .cell.status { color: #F5B841; text-transform: uppercase; font-size: 10px; font-weight: 600; }
+.royalty-summary { display: flex; justify-content: space-between; align-items: center; background: rgba(74,222,128,.1);
+  border: 1px solid rgba(74,222,128,.3); padding: 14px 16px; border-radius: 10px; font-size: 12px; color: #4ADE80; font-weight: 600; }
+.royalty-summary .total { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; }
+
+/* ======================== LOGIN LOG TAB ======================== */
+.log-table { background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; overflow: hidden; }
+.log-header-row, .log-row { display: grid; grid-template-columns: 1fr 1fr 100px; gap: 12px; align-items: center; }
+.log-header-row { background: rgba(255,255,255,.06); padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.08);
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; color: #8A97A8; }
+.log-row { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; color: #B7C0CC; font-family: 'JetBrains Mono', monospace; }
+.log-row.log-success { background: rgba(74,222,128,.04); }
+.log-row.log-failed { background: rgba(248,113,113,.04); }
+.log-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-cell-time { color: #8A97A8; }
+.log-cell-user { color: #E35F0C; font-weight: 600; }
+.log-cell-status { text-align: center; }
+.status-badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+.badge-success { background: rgba(74,222,128,.2); color: #4ADE80; }
+.badge-failed { background: rgba(248,113,113,.2); color: #FCA5A5; }
+.log-empty { padding: 32px 16px; text-align: center; color: #8A97A8; font-size: 12px; }
+
+/* Shared "mini stat card" pattern, used by both the Login Log summary and elsewhere.
+ * Deliberately NOT named .stat-card — that class already exists for the Overview page's
+ * summary cards, and reusing it would have silently overridden that unrelated UI. */
+.mini-stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 16px; }
+.mini-stat-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); border-radius: 10px; padding: 16px; text-align: center; }
+.mini-stat-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; color: #8A97A8; margin-bottom: 8px; }
+.mini-stat-value { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; color: #E35F0C; }
+.mini-stat-value.mini-stat-success { color: #4ADE80; }
+.mini-stat-value.mini-stat-failed { color: #F87171; }
+
+@media (max-width: 900px) {
+  .royalty-header, .royalty-row { grid-template-columns: 55px 80px 70px 70px 90px 120px 70px; gap: 6px; font-size: 11px; }
+  .log-header-row, .log-row { grid-template-columns: 1fr 90px 80px; font-size: 11px; }
+}
+@media (max-width: 640px) {
+  .login-box { flex-direction: column; max-width: 420px; min-height: 0; }
+  .login-panel-brand { flex: none; padding: 28px 24px; flex-direction: row; align-items: center; gap: 14px; }
+  .login-panel-brand-pattern { display: none; }
+  .login-panel-brand-content { display: flex; align-items: center; gap: 14px; }
+  .login-panel-brand-name { margin-top: 0; font-size: 18px; }
+  .login-panel-brand-tag { display: none; }
+  .login-panel-brand-foot { display: none; }
+  .login-panel-form { padding: 28px 24px; }
+  .login-form-title { font-size: 19px; }
+  .btn-logout-label { display: none; }
+  .financial-cards-row { grid-template-columns: 1fr; }
+  .royalty-table { overflow-x: auto; }
+  .royalty-header, .royalty-row { grid-template-columns: 50px 70px 60px 60px 80px 100px 60px; font-size: 10px; padding: 10px 12px; }
+  .log-header-row, .log-row { grid-template-columns: 1fr 70px 70px; font-size: 10px; padding: 10px 12px; }
 }
 `;
