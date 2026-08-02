@@ -1981,7 +1981,7 @@ function LoginLogTab({ loginHistory }) {
 /* ============================================================
  * SettingsTab — Data Export (admin only) and Account (everyone).
  * ============================================================ */
-function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime }) {
+function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError }) {
   return (
     <div className="stack">
       <section className="glass panel" style={{ padding: 0 }}>
@@ -2009,6 +2009,11 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                 <RefreshCw size={16} /> <span>Sync Now</span>
               </button>
             </div>
+            {lastSyncError && (
+              <div className="sync-error-detail">
+                <AlertTriangle size={13} /> {lastSyncError}
+              </div>
+            )}
           </div>
         )}
 
@@ -2848,6 +2853,7 @@ export default function IntegraDashboard() {
   const [hpmHistory, setHpmHistory] = useState(DEFAULT_HPM_HISTORY);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [sheetsSyncStatus, setSheetsSyncStatus] = useState("Ready");
+  const [lastSyncError, setLastSyncError] = useState("");
   const [exchangeRateHistory, setExchangeRateHistory] = useState(DEFAULT_EXCHANGE_RATE_HISTORY);
 
   const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
@@ -3145,14 +3151,18 @@ export default function IntegraDashboard() {
   const fetchDomesFromSheets = async () => {
     try {
       const response = await fetch("/api/sheets-read?sheetName=Domes");
-      if (!response.ok) throw new Error("Failed to fetch domes from Sheets");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.details || body.error || `HTTP ${response.status}`);
+      }
       const { data } = await response.json();
-      if (!data.length) return null; // empty/missing tab — don't wipe local data with nothing
+      if (!data.length) { setLastSyncError("Domes tab returned 0 rows — check the tab name and that it has data below the header row."); return null; }
       const transformed = data.map(mapDomeFromSheetRow);
       setDomes(transformed);
       return transformed;
     } catch (error) {
       console.error("Error fetching domes from Sheets:", error);
+      setLastSyncError(`Domes: ${error.message}`);
       return null;
     }
   };
@@ -3160,14 +3170,18 @@ export default function IntegraDashboard() {
   const fetchBargesFromSheets = async (freshDomes) => {
     try {
       const response = await fetch("/api/sheets-read?sheetName=Barges");
-      if (!response.ok) throw new Error("Failed to fetch barges from Sheets");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.details || body.error || `HTTP ${response.status}`);
+      }
       const { data } = await response.json();
-      if (!data.length) return null;
+      if (!data.length) { setLastSyncError("Barges tab returned 0 rows — check the tab name and that it has data below the header row."); return null; }
       const transformed = data.map((row) => mapBargeFromSheetRow(row, freshDomes || domes));
       setBarges(transformed);
       return transformed;
     } catch (error) {
       console.error("Error fetching barges from Sheets:", error);
+      setLastSyncError(`Barges: ${error.message}`);
       return null;
     }
   };
@@ -3224,6 +3238,7 @@ export default function IntegraDashboard() {
     if (!force && minutesSinceSync < 60) return;
 
     setSheetsSyncStatus("Syncing…");
+    setLastSyncError("");
     const freshDomes = await fetchDomesFromSheets();
     const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
 
@@ -3542,7 +3557,7 @@ export default function IntegraDashboard() {
         {tab === "log" && isAdmin && <LoginLogTab loginHistory={loginHistory} />}
         {tab === "settings" && (
           <SettingsTab isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} exportAllForGoogleSheets={exportAllForGoogleSheets}
-            syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} />
+            syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} lastSyncError={lastSyncError} />
         )}
       </main>
     </div>
@@ -4479,6 +4494,9 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .btn-settings-action.btn-logout-action:hover { background: rgba(248,113,113,.25); border-color: rgba(248,113,113,.5); }
 .btn-settings-action.btn-sync-sheets { background: rgba(74,222,128,.15); border-color: rgba(74,222,128,.35); color: #4ADE80; }
 .btn-settings-action.btn-sync-sheets:hover { background: rgba(74,222,128,.25); border-color: rgba(74,222,128,.5); }
+.sync-error-detail { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px 12px;
+  background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.25); border-radius: 8px;
+  color: #FCA5A5; font-size: 11.5px; line-height: 1.4; font-family: 'JetBrains Mono', monospace; }
 
 @media (max-width: 768px) {
   .settings-card { flex-direction: column; align-items: flex-start; }
