@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
   Layers, ChevronDown, RotateCcw, Gauge, Upload, X,
-  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu
+  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -1549,7 +1549,7 @@ function StockTab({ domes }) {
 
 /* ----------------------------- Barging Plan tab ----------------------------- */
 
-function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus }) {
+function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted }) {
   const [open, setOpen] = useState(false);
   const [addDome, setAddDome] = useState("");
   const [addAmt, setAddAmt] = useState("");
@@ -1623,7 +1623,10 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
         `\n\nDouble-check the Dome ID spelling against the Stock tab. ${validSources.length} valid row${validSources.length === 1 ? "" : "s"} were still applied.`
       );
     }
-    if (validSources.length) onImport(barge.no, validSources);
+    if (validSources.length) {
+      onImport(barge.no, validSources);
+      onDataCommitted?.();
+    }
   };
 
   return (
@@ -1978,7 +1981,7 @@ function LoginLogTab({ loginHistory }) {
 /* ============================================================
  * SettingsTab — Data Export (admin only) and Account (everyone).
  * ============================================================ */
-function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets }) {
+function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime }) {
   return (
     <div className="stack">
       <section className="glass panel" style={{ padding: 0 }}>
@@ -1986,6 +1989,28 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
           <h2>Settings &amp; Admin</h2>
           <p style={{ fontSize: "12px", color: "#8A97A8", marginTop: "4px" }}>Export data, manage account settings</p>
         </div>
+
+        {isAdmin && (
+          <div className="settings-section">
+            <div className="settings-section-header">
+              <h3>Live Sheets Sync</h3>
+              <span className="section-badge">Admin Only</span>
+            </div>
+            <div className="settings-card">
+              <div className="card-content">
+                <h4>Status: {sheetsSyncStatus}</h4>
+                <p>
+                  {lastSyncTime ? `Last synced ${lastSyncTime.toLocaleString()}` : "Not synced yet this session"} — pulls Domes and
+                  Barges from your Google Sheet. Auto-syncs on login and every 30 min if the last sync is over an hour old.
+                  Finalizing/reopening a barge and Excel imports also push changes back to Sheets automatically.
+                </p>
+              </div>
+              <button onClick={() => syncWithSheets(true)} className="btn-settings-action btn-sync-sheets">
+                <RefreshCw size={16} /> <span>Sync Now</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {isAdmin && (
           <div className="settings-section">
@@ -2821,6 +2846,8 @@ export default function IntegraDashboard() {
 
   // Financials (admin-only)
   const [hpmHistory, setHpmHistory] = useState(DEFAULT_HPM_HISTORY);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+  const [sheetsSyncStatus, setSheetsSyncStatus] = useState("Ready");
   const [exchangeRateHistory, setExchangeRateHistory] = useState(DEFAULT_EXCHANGE_RATE_HISTORY);
 
   const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
@@ -2894,6 +2921,16 @@ export default function IntegraDashboard() {
     const interval = setInterval(check, 60 * 1000);
     return () => clearInterval(interval);
   }, [isLoggedIn]);
+
+  // Phase 2B: pull fresh data from Google Sheets on login (admin only), hybrid — only
+  // actually fetches if the last sync was over an hour ago, unless forced via the
+  // "Sync Now" button. Also re-checks every 30 minutes while the tab stays open.
+  useEffect(() => {
+    if (!isLoggedIn || !isAdmin) return;
+    syncWithSheets(false);
+    const syncInterval = setInterval(() => syncWithSheets(false), 30 * 60 * 1000);
+    return () => clearInterval(syncInterval);
+  }, [isLoggedIn, isAdmin]);
 
   const handleLogin = (username, password) => {
     setLoginError("");
@@ -3012,15 +3049,16 @@ export default function IntegraDashboard() {
   const toCSV = (headers, rows) => [headers.join(","), ...rows.map((r) => r.map(csvEscape).join(","))].join("\n");
 
   const exportDomesCSV = () => toCSV(
-    ["Dome ID", "Contractor", "Stock (WMT)", "Ni %", "Fe %", "Co %", "SiO2 %", "MgO %", "Al2O3 %", "Si:Mg", "Location", "Source"],
-    domes.map((d) => [d.id, d.contractor, d.stock, fmt(d.ni, 2), fmt(d.fe, 2), fmt(d.co, 2), fmt(d.sio2, 2), fmt(d.mgo, 2), fmt(d.al2o3, 2), fmt(d.simg, 2), d.location || "", d.source])
+    ["Dome ID", "Contractor", "Stock (WMT)", "Initial Stock (WMT)", "Ni %", "Fe %", "Co %", "SiO2 %", "MgO %", "Al2O3 %", "Si:Mg", "Location", "Source"],
+    domes.map((d) => [d.id, d.contractor, d.stock, d.initialStock !== undefined ? d.initialStock : d.stock, fmt(d.ni, 2), fmt(d.fe, 2), fmt(d.co, 2), fmt(d.sio2, 2), fmt(d.mgo, 2), fmt(d.al2o3, 2), fmt(d.simg, 2), d.location || "", d.source])
   );
   const exportBargesCSV = () => toCSV(
-    ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources"],
+    ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments"],
     barges.map((b) => [
       String(b.no).padStart(2, "0"), b.shipDate, b.bargeName || "", b.tugboatName || "",
       fmt(b.totalWMT), fmt(b.grade, 2), b.status, b.finalized ? "Yes" : "No",
       (b.sources || []).map((s) => `${s.id}:${s.amt}WMT`).join("; "),
+      b.stockAdjustments && Object.keys(b.stockAdjustments).length ? JSON.stringify(b.stockAdjustments) : "",
     ])
   );
   const exportHPMHistoryCSV = () => toCSV(
@@ -3061,6 +3099,153 @@ export default function IntegraDashboard() {
     );
   };
 
+  // ---- Phase 2B: live Google Sheets sync (admin only) ----
+  // Fixes applied vs. the original build prompt:
+  //  - fetchBargesFromSheets takes the freshly-fetched domes as a PARAMETER instead of
+  //    reading the `domes` state variable directly — React state updates aren't
+  //    synchronously visible in the same function scope, so the original approach would
+  //    have computed barge grades against stale (pre-sync) dome data.
+  //  - Location and Al2O3 % are now read back — the original silently dropped both,
+  //    which would have wiped dome location data (used on the Timeline map and Stock
+  //    table) on every sync.
+  //  - Initial Stock and Stock Adjustments now round-trip too, so the "Stock Out"
+  //    tracking and the finalize/reopen deficit-reversal feature both survive a sync.
+  const mapDomeFromSheetRow = (row) => ({
+    id: row["Dome ID"], contractor: row["Contractor"],
+    stock: parseFloat(row["Stock (WMT)"]) || 0,
+    initialStock: row["Initial Stock (WMT)"] !== "" && row["Initial Stock (WMT)"] !== undefined
+      ? parseFloat(row["Initial Stock (WMT)"]) : (parseFloat(row["Stock (WMT)"]) || 0),
+    ni: parseFloat(row["Ni %"]) || 0, fe: parseFloat(row["Fe %"]) || 0, co: parseFloat(row["Co %"]) || 0,
+    sio2: parseFloat(row["SiO2 %"]) || 0, mgo: parseFloat(row["MgO %"]) || 0,
+    al2o3: parseFloat(row["Al2O3 %"]) || 0, simg: parseFloat(row["Si:Mg"]) || 0,
+    location: row["Location"] || "", source: row["Source"] || "inventory",
+  });
+
+  const mapBargeFromSheetRow = (row, domesForGrade) => {
+    const sourcesStr = row["Sources"] || "";
+    const sources = sourcesStr.split(";").map((s) => s.trim()).filter(Boolean).map((s) => {
+      const [id, amtStr] = s.split(":");
+      const domeId = (id || "").trim();
+      const dome = domesForGrade.find((d) => d.id === domeId);
+      return { id: domeId, amt: parseFloat(amtStr) || 0, grade: dome ? dome.ni : 0 };
+    });
+    let stockAdjustments;
+    try { stockAdjustments = row["Stock Adjustments"] ? JSON.parse(row["Stock Adjustments"]) : undefined; }
+    catch (e) { stockAdjustments = undefined; }
+    return {
+      no: parseInt(row["Barge No"]) || 0,
+      shipDate: row["Ship Date"] || new Date().toISOString().split("T")[0],
+      bargeName: row["Barge Name"] || "", tugboatName: row["Tugboat Name"] || "",
+      totalWMT: parseFloat(row["Total WMT"]) || 0, grade: parseFloat(row["Grade (Ni %)"]) || 0,
+      status: row["Status"] || "draft", finalized: row["Finalized"] === "Yes",
+      sources, stockAdjustments,
+    };
+  };
+
+  const fetchDomesFromSheets = async () => {
+    try {
+      const response = await fetch("/api/sheets-read?sheetName=Domes");
+      if (!response.ok) throw new Error("Failed to fetch domes from Sheets");
+      const { data } = await response.json();
+      if (!data.length) return null; // empty/missing tab — don't wipe local data with nothing
+      const transformed = data.map(mapDomeFromSheetRow);
+      setDomes(transformed);
+      return transformed;
+    } catch (error) {
+      console.error("Error fetching domes from Sheets:", error);
+      return null;
+    }
+  };
+
+  const fetchBargesFromSheets = async (freshDomes) => {
+    try {
+      const response = await fetch("/api/sheets-read?sheetName=Barges");
+      if (!response.ok) throw new Error("Failed to fetch barges from Sheets");
+      const { data } = await response.json();
+      if (!data.length) return null;
+      const transformed = data.map((row) => mapBargeFromSheetRow(row, freshDomes || domes));
+      setBarges(transformed);
+      return transformed;
+    } catch (error) {
+      console.error("Error fetching barges from Sheets:", error);
+      return null;
+    }
+  };
+
+  const writeToSheets = async (sheetName, csvText) => {
+    try {
+      const rows = csvText.split("\n").map((line) =>
+        // basic CSV split good enough for our own toCSV output (fields we quote never
+        // contain embedded newlines)
+        line.match(/(".*?"|[^,]+)(?=,|$)/g)?.map((f) => f.replace(/^"|"$/g, "").replace(/""/g, '"')) || []
+      );
+      const response = await fetch("/api/sheets-write", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sheetName, data: rows }),
+      });
+      if (!response.ok) throw new Error(`Failed to write ${sheetName} to Sheets`);
+      return true;
+    } catch (error) {
+      console.error(`Error writing ${sheetName} to Sheets:`, error);
+      return false;
+    }
+  };
+  // Accept an explicit domes/barges array (used right after a state update, where the
+  // component's own `domes`/`barges` closure would still be the stale pre-update
+  // value) — falls back to current state for the manual "Sync Now" case.
+  const writeDomesToSheets = (domesOverride) => {
+    const list = domesOverride || domes;
+    const csv = toCSV(
+      ["Dome ID", "Contractor", "Stock (WMT)", "Initial Stock (WMT)", "Ni %", "Fe %", "Co %", "SiO2 %", "MgO %", "Al2O3 %", "Si:Mg", "Location", "Source"],
+      list.map((d) => [d.id, d.contractor, d.stock, d.initialStock !== undefined ? d.initialStock : d.stock, fmt(d.ni, 2), fmt(d.fe, 2), fmt(d.co, 2), fmt(d.sio2, 2), fmt(d.mgo, 2), fmt(d.al2o3, 2), fmt(d.simg, 2), d.location || "", d.source])
+    );
+    return writeToSheets("Domes", csv);
+  };
+  const writeBargesToSheets = (bargesOverride) => {
+    const list = bargesOverride || barges;
+    const csv = toCSV(
+      ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments"],
+      list.map((b) => [
+        String(b.no).padStart(2, "0"), b.shipDate, b.bargeName || "", b.tugboatName || "",
+        fmt(b.totalWMT), fmt(b.grade, 2), b.status, b.finalized ? "Yes" : "No",
+        (b.sources || []).map((s) => `${s.id}:${s.amt}WMT`).join("; "),
+        b.stockAdjustments && Object.keys(b.stockAdjustments).length ? JSON.stringify(b.stockAdjustments) : "",
+      ])
+    );
+    return writeToSheets("Barges", csv);
+  };
+
+  const syncWithSheets = async (force = false) => {
+    if (!isAdmin) return;
+    const lastSyncStr = localStorage.getItem("lastSheetsSyncTime");
+    const lastSync = lastSyncStr ? new Date(lastSyncStr) : null;
+    const minutesSinceSync = lastSync ? (Date.now() - lastSync.getTime()) / 1000 / 60 : 999;
+    if (!force && minutesSinceSync < 60) return;
+
+    setSheetsSyncStatus("Syncing…");
+    const freshDomes = await fetchDomesFromSheets();
+    const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
+
+    if (freshDomes && freshBarges) {
+      setLastSyncTime(new Date());
+      localStorage.setItem("lastSheetsSyncTime", new Date().toISOString());
+      setSheetsSyncStatus("✅ Synced");
+    } else {
+      setSheetsSyncStatus("❌ Sync failed — using local data");
+    }
+  };
+
+  // Fires after a discrete, deliberate data change (Excel/CSV import onto a barge) —
+  // deliberately NOT wired into every inline edit (typing a quantity, renaming a barge),
+  // since those fire on every keystroke and would hammer the Sheets API. A short debounce
+  // lets React finish committing the state update first, so the write reads fresh data
+  // rather than a stale pre-update snapshot.
+  const onDataCommitted = () => {
+    if (!isAdmin) return;
+    setTimeout(() => { writeDomesToSheets(); writeBargesToSheets(); }, 500);
+  };
+
   // finalize / reopen actually mutates the master stock here, since it needs setDomes
   // Does the actual state mutation for finalize/reopen — unconditional, no checks.
   // Called either directly (no deficit) or after explicit confirmation (deficit present).
@@ -3069,6 +3254,7 @@ export default function IntegraDashboard() {
     if (!barge) return;
     const sign = barge.finalized ? 1 : -1; // reopening adds back; finalizing subtracts
 
+    let updatedDomes, updatedBarges;
     if (sign === -1) {
       // Finalizing: subtract normally where stock covers it. Where it doesn't (only
       // reachable after explicit confirmation via the alert modal), clamp that dome to
@@ -3076,7 +3262,7 @@ export default function IntegraDashboard() {
       // Stock page's ledger stays consistent. The exact shortfall per dome is recorded
       // on the barge itself so reopening can reverse precisely this adjustment.
       const adjustments = {};
-      setDomes((prev) => prev.map((d) => {
+      updatedDomes = domes.map((d) => {
         const used = barge.sources.filter((s) => s.id === d.id).reduce((s, x) => s + x.amt, 0);
         if (used <= 0) return d;
         if (d.stock < used) {
@@ -3086,21 +3272,24 @@ export default function IntegraDashboard() {
           return { ...d, stock: 0, initialStock: priorInitial + deficit };
         }
         return { ...d, stock: d.stock - used };
-      }));
-      setBarges((prev) => prev.map((b) => b.no === no ? { ...b, finalized: true, stockAdjustments: adjustments } : b));
+      });
+      updatedBarges = barges.map((b) => b.no === no ? { ...b, finalized: true, stockAdjustments: adjustments } : b);
     } else {
       // Reopening: reverse exactly what finalize did, including any deficit adjustment
       // that was applied — not just adding the barged amount back blindly.
       const adjustments = barge.stockAdjustments || {};
-      setDomes((prev) => prev.map((d) => {
+      updatedDomes = domes.map((d) => {
         const used = barge.sources.filter((s) => s.id === d.id).reduce((s, x) => s + x.amt, 0);
         if (used <= 0) return d;
         const deficit = adjustments[d.id] || 0;
         const priorInitial = d.initialStock !== undefined ? d.initialStock : d.stock;
         return { ...d, stock: Math.max(0, d.stock + used - deficit), initialStock: priorInitial - deficit };
-      }));
-      setBarges((prev) => prev.map((b) => b.no === no ? { ...b, finalized: false, stockAdjustments: undefined } : b));
+      });
+      updatedBarges = barges.map((b) => b.no === no ? { ...b, finalized: false, stockAdjustments: undefined } : b);
     }
+    setDomes(updatedDomes);
+    setBarges(updatedBarges);
+    if (isAdmin) { writeDomesToSheets(updatedDomes); writeBargesToSheets(updatedBarges); }
     setPendingFinalize(null);
   };
 
@@ -3339,7 +3528,7 @@ export default function IntegraDashboard() {
       <main className="content">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && <StockTab domes={domes} />}
-        {tab === "plan" && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} />}
+        {tab === "plan" && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} />}
         {tab === "timeline" && <TimelineTab domes={domes} settings={settings} barges={barges} />}
         {tab === "financials" && isAdmin && (
           <FinancialsTab
@@ -3352,7 +3541,8 @@ export default function IntegraDashboard() {
         )}
         {tab === "log" && isAdmin && <LoginLogTab loginHistory={loginHistory} />}
         {tab === "settings" && (
-          <SettingsTab isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} exportAllForGoogleSheets={exportAllForGoogleSheets} />
+          <SettingsTab isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} exportAllForGoogleSheets={exportAllForGoogleSheets}
+            syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} />
         )}
       </main>
     </div>
@@ -3360,7 +3550,7 @@ export default function IntegraDashboard() {
 }
 
 /* PlanTabWired: thin wrapper so finalize can reach the top-level setDomes */
-function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOpenInvoice, onExportBarge, onCheckStatus }) {
+function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted }) {
   const [filter, setFilter] = useState("all");
   const [genCount, setGenCount] = useState(5);
   const [genContractors, setGenContractors] = useState(null); // null = all
@@ -3557,7 +3747,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
         )}
         {filtered.map((b) => (
           <BargeRow key={b.no} barge={b} domesById={domesById} pool={pool}
-            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} onCheckStatus={onCheckStatus} />
+            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} onCheckStatus={onCheckStatus} onDataCommitted={onDataCommitted} />
         ))}
       </section>
     </div>
@@ -4287,6 +4477,8 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .btn-settings-action.btn-export:hover { background: rgba(34,211,184,.25); border-color: rgba(34,211,184,.5); }
 .btn-settings-action.btn-logout-action { background: rgba(248,113,113,.15); border-color: rgba(248,113,113,.35); color: #F87171; }
 .btn-settings-action.btn-logout-action:hover { background: rgba(248,113,113,.25); border-color: rgba(248,113,113,.5); }
+.btn-settings-action.btn-sync-sheets { background: rgba(74,222,128,.15); border-color: rgba(74,222,128,.35); color: #4ADE80; }
+.btn-settings-action.btn-sync-sheets:hover { background: rgba(74,222,128,.25); border-color: rgba(74,222,128,.5); }
 
 @media (max-width: 768px) {
   .settings-card { flex-direction: column; align-items: flex-start; }
