@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
   Layers, ChevronDown, RotateCcw, Gauge, Upload, X,
-  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut
+  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -43,17 +43,22 @@ const LAB_FIELDS = [["ni", "Ni"], ["fe", "Fe"], ["co", "Co"], ["sio2", "SiO2"], 
 const CREDENTIALS = {
   operation: { password: "opsintegra2026", role: "operation" },
   integra: { password: "admin-imn", role: "admin" },
+  dev: { password: "test123", role: "admin" }, // Test account — for trying new features before wider rollout
 };
 const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 
-const DEFAULT_HMA_HISTORY = [
+// HPM (Harga Patokan Mineral) is tracked manually here, updated directly from whatever
+// figure Integra is actually given each period — no formula calculation. Deliberately
+// simpler than deriving HPM from HMA + Corrective Factors: the person confirmed this is
+// the workflow they want.
+const DEFAULT_HPM_HISTORY = [
   { date: "2026-07-15", price: 53.60, unit: "USD/WMT" },
   { date: "2026-07-01", price: 56.58, unit: "USD/WMT" },
   { date: "2026-06-15", price: 59.52, unit: "USD/WMT" },
 ];
 const DEFAULT_EXCHANGE_RATE_HISTORY = [
-  { date: "2026-07-27", rate: 15500, source: "XE.com" },
-  { date: "2026-07-26", rate: 15480, source: "XE.com" },
+  { date: "2026-07-29", rate: 17990, source: "Market mid-rate (Yahoo Finance / Pluang), verified via search" },
+  { date: "2026-07-28", rate: 18010, source: "Market mid-rate (Yahoo Finance / Pluang), verified via search" },
 ];
 const ROYALTY_TARIFF = 0.15; // flat 15% — see build note about bracket-based tariffs
 
@@ -937,6 +942,60 @@ function NavButton({ icon: Icon, label, active, onClick, mobile }) {
   );
 }
 
+/* Mobile hamburger nav — a single button that opens a dropdown listing every tab,
+ * replacing the old bottom icon bar (which got cramped once Financials/Log/Settings
+ * were added on top of the original 4 tabs). Closes on selection or on outside click,
+ * same interaction pattern as MultiSelectDropdown/SearchableDomeSelect elsewhere. */
+function MobileNavMenu({ tab, setTab, isAdmin, currentUser, handleLogout }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const items = [
+    { key: "overview", label: "Overview", icon: LayoutGrid },
+    { key: "stock", label: "Stock", icon: Layers },
+    { key: "plan", label: "Barging Plan", icon: Ship },
+    { key: "timeline", label: "Timeline", icon: Calendar },
+    ...(isAdmin ? [{ key: "financials", label: "Financials", icon: DollarSign }] : []),
+    ...(isAdmin ? [{ key: "log", label: "Login Log", icon: History }] : []),
+    { key: "settings", label: "Settings", icon: Settings },
+  ];
+
+  const go = (key) => { setTab(key); setOpen(false); };
+
+  return (
+    <div className="mobile-nav-menu" ref={ref}>
+      <button className="hamburger-btn" onClick={() => setOpen(!open)} aria-label="Menu">
+        <Menu size={22} />
+      </button>
+      {open && (
+        <div className="mobile-nav-panel glass">
+          <div className="mobile-nav-user">
+            <div className="mobile-nav-username">{currentUser?.username}</div>
+            <div className="mobile-nav-role">{isAdmin ? "Administrator" : "Operations"}</div>
+          </div>
+          <div className="mobile-nav-list">
+            {items.map((item) => (
+              <button key={item.key} className={`mobile-nav-item ${tab === item.key ? "mobile-nav-item-active" : ""}`} onClick={() => go(item.key)}>
+                <item.icon size={17} strokeWidth={2.3} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+          <button className="mobile-nav-logout" onClick={() => { setOpen(false); handleLogout(); }}>
+            <LogOut size={16} /> <span>Logout</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StatCard({ title, tag, stats, color }) {
   return (
     <div className="stat-card">
@@ -1756,14 +1815,14 @@ function TimelineTab({ barges, settings }) {
  * by HMA price bracket under Indonesian mining regulation — flag this if precise bracket
  * rules are needed later; flat-rate is intentionally the simple first pass.
  * ============================================================ */
-function FinancialsTab({ barges, hmaHistory, setHmaHistory, exchangeRateHistory, setExchangeRateHistory,
-  getHmaPriceOnDate, getExchangeRateOnDate, calculateRoyalty, getHmaTrendPercent, getExRateTrendPercent, exportFinancialData }) {
+function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory, setExchangeRateHistory,
+  getHpmOnDate, getExchangeRateOnDate, calculateRoyalty, getHpmTrendPercent, getExRateTrendPercent, exportFinancialData }) {
 
-  const updateHma = () => {
-    const newPrice = prompt("Enter new HMA price (USD/WMT):", hmaHistory[0]?.price);
+  const updateHpm = () => {
+    const newPrice = prompt("Enter new HPM price (USD/WMT):", hpmHistory[0]?.price);
     if (newPrice && !isNaN(parseFloat(newPrice))) {
       const today = new Date().toISOString().split("T")[0];
-      setHmaHistory((prev) => [{ date: today, price: parseFloat(newPrice), unit: "USD/WMT" }, ...prev].slice(0, 180));
+      setHpmHistory((prev) => [{ date: today, price: parseFloat(newPrice), unit: "USD/WMT" }, ...prev].slice(0, 180));
     }
   };
   const updateRate = () => {
@@ -1774,7 +1833,7 @@ function FinancialsTab({ barges, hmaHistory, setHmaHistory, exchangeRateHistory,
     }
   };
 
-  const hmaTrend = getHmaTrendPercent();
+  const hpmTrend = getHpmTrendPercent();
   const exTrend = getExRateTrendPercent();
   const sortedBarges = [...barges].sort((a, b) => a.no - b.no);
   const totalRoyalty = barges.reduce((sum, b) => sum + calculateRoyalty(b.shipDate, b.totalWMT || 0), 0);
@@ -1783,23 +1842,23 @@ function FinancialsTab({ barges, hmaHistory, setHmaHistory, exchangeRateHistory,
     <div className="stack">
       <section className="glass panel">
         <div className="panel-head"><DollarSign size={16} /><span>Royalty &amp; PNBP Calculator</span></div>
-        <p className="note" style={{ marginBottom: 16 }}>Royalty = HMA price x Exchange Rate x Qty x 15% tariff (flat rate — see build note on price-bracket tariffs).</p>
+        <p className="note" style={{ marginBottom: 16 }}>Royalty = HPM x Exchange Rate x Qty x 15% tariff. HPM is entered manually per period — not calculated from a formula.</p>
 
         <div className="financial-cards-row">
           <div className="financial-card">
             <div className="card-header">
-              <span>Nickel Benchmark Price (HMA)</span>
-              <span className="card-unit">1.4% Ni | USD/WMT</span>
+              <span>HPM (Harga Patokan Mineral)</span>
+              <span className="card-unit">USD/WMT</span>
             </div>
-            <div className="card-main-value">${hmaHistory[0]?.price?.toFixed(2) || "—"}</div>
+            <div className="card-main-value">${hpmHistory[0]?.price?.toFixed(2) || "—"}</div>
             <div className="card-meta">
-              <div className="meta-item"><span className="meta-label">Last Updated</span><span className="meta-value">{hmaHistory[0]?.date || "—"}</span></div>
+              <div className="meta-item"><span className="meta-label">Last Updated</span><span className="meta-value">{hpmHistory[0]?.date || "—"}</span></div>
               <div className="meta-item">
                 <span className="meta-label">Change vs. Previous</span>
-                <span className={`meta-value trend ${hmaTrend >= 0 ? "up" : "down"}`}>{hmaTrend >= 0 ? "↑" : "↓"} {Math.abs(hmaTrend).toFixed(2)}%</span>
+                <span className={`meta-value trend ${hpmTrend >= 0 ? "up" : "down"}`}>{hpmTrend >= 0 ? "↑" : "↓"} {Math.abs(hpmTrend).toFixed(2)}%</span>
               </div>
             </div>
-            <div className="card-actions"><button onClick={updateHma} className="btn-card-action">Update Price</button></div>
+            <div className="card-actions"><button onClick={updateHpm} className="btn-card-action">Update HPM</button></div>
           </div>
 
           <div className="financial-card">
@@ -1827,19 +1886,24 @@ function FinancialsTab({ barges, hmaHistory, setHmaHistory, exchangeRateHistory,
             <FileUp size={14} /> Export Data
           </button>
         </div>
+        <p className="note" style={{ marginTop: 0, marginBottom: 12 }}>
+          Each barge uses the HPM and exchange rate that were in effect on its own ship date, not today's — that's
+          the whole point of keeping history instead of a single current figure.
+        </p>
         <div className="royalty-table">
           <div className="royalty-header">
-            <div>Barge No.</div><div>Date</div><div>Qty (WMT)</div><div>HMA (USD)</div><div>ExRate (IDR)</div><div>Royalty (IDR)</div><div>Status</div>
+            <div>Barge No.</div><div>Date</div><div>Qty (WMT)</div><div>HPM ($/WMT)</div><div>ExRate (IDR)</div><div>Royalty (IDR)</div><div>Status</div>
           </div>
           {sortedBarges.length === 0 && <div className="log-empty">No barges yet.</div>}
           {sortedBarges.map((barge) => {
             const royalty = calculateRoyalty(barge.shipDate, barge.totalWMT || 0);
+            const hpm = getHpmOnDate(barge.shipDate);
             return (
               <div key={barge.no} className="royalty-row">
                 <div className="cell">#{barge.no}</div>
                 <div className="cell">{barge.shipDate || "—"}</div>
                 <div className="cell">{fmt(barge.totalWMT)}</div>
-                <div className="cell">${getHmaPriceOnDate(barge.shipDate).toFixed(2)}</div>
+                <div className="cell">${hpm.toFixed(2)}</div>
                 <div className="cell">{fmt(getExchangeRateOnDate(barge.shipDate))}</div>
                 <div className="cell highlight">{royalty.toLocaleString("id-ID", { maximumFractionDigits: 0 })}</div>
                 <div className="cell status">{barge.finalized ? "Finalized" : "Draft"}</div>
@@ -1904,6 +1968,53 @@ function LoginLogTab({ loginHistory }) {
           <div className="mini-stat-card">
             <div className="mini-stat-label">Failed Attempts</div>
             <div className="mini-stat-value mini-stat-failed">{failedCount}</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* ============================================================
+ * SettingsTab — Data Export (admin only) and Account (everyone).
+ * ============================================================ */
+function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets }) {
+  return (
+    <div className="stack">
+      <section className="glass panel" style={{ padding: 0 }}>
+        <div className="settings-header">
+          <h2>Settings &amp; Admin</h2>
+          <p style={{ fontSize: "12px", color: "#8A97A8", marginTop: "4px" }}>Export data, manage account settings</p>
+        </div>
+
+        {isAdmin && (
+          <div className="settings-section">
+            <div className="settings-section-header">
+              <h3>Data Export</h3>
+              <span className="section-badge">Admin Only</span>
+            </div>
+            <div className="settings-card">
+              <div className="card-content">
+                <h4>Export to Google Sheets</h4>
+                <p>Downloads Domes, Barges, HPM history, Exchange rates, and Login history as 5 CSV files — import each into the matching tab of your Google Sheet.</p>
+              </div>
+              <button onClick={exportAllForGoogleSheets} className="btn-settings-action btn-export">
+                <FileUp size={16} /> <span>Export Data</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="settings-section">
+          <div className="settings-section-header"><h3>Account</h3></div>
+          <div className="settings-card">
+            <div className="card-content">
+              <h4>Logged in as: <strong>{currentUser?.username}</strong></h4>
+              <p>Role: {currentUser?.role === "admin" ? "Administrator" : "Operations"}</p>
+            </div>
+            <button onClick={handleLogout} className="btn-settings-action btn-logout-action">
+              <LogOut size={16} /> <span>Logout</span>
+            </button>
           </div>
         </div>
       </section>
@@ -2709,7 +2820,7 @@ export default function IntegraDashboard() {
   const isOperation = currentUser?.role === "operation";
 
   // Financials (admin-only)
-  const [hmaHistory, setHmaHistory] = useState(DEFAULT_HMA_HISTORY);
+  const [hpmHistory, setHpmHistory] = useState(DEFAULT_HPM_HISTORY);
   const [exchangeRateHistory, setExchangeRateHistory] = useState(DEFAULT_EXCHANGE_RATE_HISTORY);
 
   const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
@@ -2823,24 +2934,28 @@ export default function IntegraDashboard() {
   // barge.dateCreated/barge.id — neither field exists on this app's barge objects
   // (they're barge.shipDate and barge.no). As written, every barge would have silently
   // fallen back to today's price/rate instead of its own historical date.
-  const getHmaPriceOnDate = (targetDate) => {
-    const sorted = [...hmaHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
+  //
+  // HPM is looked up directly from manually-entered history (no formula) — each barge
+  // uses whatever HPM was in effect on its own shipDate, not today's.
+  const getHpmOnDate = (targetDate) => {
+    const sorted = [...hpmHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
     const match = sorted.find((h) => new Date(h.date) <= new Date(targetDate));
     return match ? match.price : sorted[sorted.length - 1]?.price || 0;
   };
   const getExchangeRateOnDate = (targetDate) => {
     const sorted = [...exchangeRateHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
     const match = sorted.find((h) => new Date(h.date) <= new Date(targetDate));
-    return match ? match.rate : sorted[sorted.length - 1]?.rate || 15000;
+    return match ? match.rate : sorted[sorted.length - 1]?.rate || 17990;
   };
+
   const calculateRoyalty = (bargeDate, qty) => {
-    const hmaPrice = getHmaPriceOnDate(bargeDate);
+    const hpm = getHpmOnDate(bargeDate);
     const exRate = getExchangeRateOnDate(bargeDate);
-    return hmaPrice * exRate * qty * ROYALTY_TARIFF;
+    return hpm * exRate * qty * ROYALTY_TARIFF;
   };
-  const getHmaTrendPercent = () => {
-    if (hmaHistory.length < 2) return 0;
-    return ((hmaHistory[0].price - hmaHistory[1].price) / hmaHistory[1].price) * 100;
+  const getHpmTrendPercent = () => {
+    if (hpmHistory.length < 2) return 0;
+    return ((hpmHistory[0].price - hpmHistory[1].price) / hpmHistory[1].price) * 100;
   };
   const getExRateTrendPercent = () => {
     if (exchangeRateHistory.length < 2) return 0;
@@ -2870,8 +2985,8 @@ export default function IntegraDashboard() {
   const exportFinancialData = () => {
     const csv = [
       "Financial Data Export — " + new Date().toISOString(), "",
-      "HMA PRICE HISTORY", "Date,Price (USD/WMT)",
-      ...hmaHistory.map((h) => `${h.date},${h.price}`), "",
+      "HPM PRICE HISTORY", "Date,Price (USD/WMT)",
+      ...hpmHistory.map((h) => `${h.date},${h.price}`), "",
       "EXCHANGE RATE HISTORY", "Date,Rate (IDR/USD),Source",
       ...exchangeRateHistory.map((e) => `${e.date},${e.rate},${e.source || "manual"}`),
     ].join("\n");
@@ -2885,6 +3000,66 @@ export default function IntegraDashboard() {
   };
 
   const resetDefaults = () => { setDomes(withInitialStock(DEFAULT_DOMES)); setSettings(DEFAULT_SETTINGS); setBarges(DEFAULT_BARGES); };
+
+  // ---- Google Sheets export suite (Settings tab, admin only) ----
+  // One CSV per category, all downloaded together, meant to be imported into a Google
+  // Sheet with matching tab names (Domes / Barges / HPMHistory / ExchangeRates /
+  // LoginHistory) as a Phase 2 manual backup/handoff step.
+  const csvEscape = (cell) => {
+    const str = String(cell ?? "");
+    return str.includes(",") || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str;
+  };
+  const toCSV = (headers, rows) => [headers.join(","), ...rows.map((r) => r.map(csvEscape).join(","))].join("\n");
+
+  const exportDomesCSV = () => toCSV(
+    ["Dome ID", "Contractor", "Stock (WMT)", "Ni %", "Fe %", "Co %", "SiO2 %", "MgO %", "Al2O3 %", "Si:Mg", "Location", "Source"],
+    domes.map((d) => [d.id, d.contractor, d.stock, fmt(d.ni, 2), fmt(d.fe, 2), fmt(d.co, 2), fmt(d.sio2, 2), fmt(d.mgo, 2), fmt(d.al2o3, 2), fmt(d.simg, 2), d.location || "", d.source])
+  );
+  const exportBargesCSV = () => toCSV(
+    ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources"],
+    barges.map((b) => [
+      String(b.no).padStart(2, "0"), b.shipDate, b.bargeName || "", b.tugboatName || "",
+      fmt(b.totalWMT), fmt(b.grade, 2), b.status, b.finalized ? "Yes" : "No",
+      (b.sources || []).map((s) => `${s.id}:${s.amt}WMT`).join("; "),
+    ])
+  );
+  const exportHPMHistoryCSV = () => toCSV(
+    ["Date", "Price (USD/WMT)"],
+    [...hpmHistory].sort((a, b) => new Date(b.date) - new Date(a.date)).map((h) => [h.date, h.price.toFixed(2)])
+  );
+  const exportExchangeRateHistoryCSV = () => toCSV(
+    ["Date", "Rate (IDR/USD)", "Source"],
+    [...exchangeRateHistory].sort((a, b) => new Date(b.date) - new Date(a.date)).map((e) => [e.date, e.rate, e.source || "manual"])
+  );
+  const exportLoginHistoryCSV = () => toCSV(
+    ["Timestamp", "Username", "Status"],
+    loginHistory.map((l) => [l.timestamp, l.username, l.status])
+  );
+
+  const downloadCSV = (filename, csvContent) => {
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportAllForGoogleSheets = () => {
+    const today = new Date().toISOString().split("T")[0];
+    downloadCSV(`Integra-Domes-${today}.csv`, exportDomesCSV());
+    setTimeout(() => downloadCSV(`Integra-Barges-${today}.csv`, exportBargesCSV()), 400);
+    setTimeout(() => downloadCSV(`Integra-HPMHistory-${today}.csv`, exportHPMHistoryCSV()), 800);
+    setTimeout(() => downloadCSV(`Integra-ExchangeRates-${today}.csv`, exportExchangeRateHistoryCSV()), 1200);
+    setTimeout(() => downloadCSV(`Integra-LoginHistory-${today}.csv`, exportLoginHistoryCSV()), 1600);
+    alert(
+      "✅ Export complete! 5 CSV files downloaded:\n\n" +
+      `1. Integra-Domes-${today}.csv\n2. Integra-Barges-${today}.csv\n3. Integra-HPMHistory-${today}.csv\n` +
+      `4. Integra-ExchangeRates-${today}.csv\n5. Integra-LoginHistory-${today}.csv\n\n` +
+      "Next: import each file into the matching tab of your Google Sheet."
+    );
+  };
 
   // finalize / reopen actually mutates the master stock here, since it needs setDomes
   // Does the actual state mutation for finalize/reopen — unconditional, no checks.
@@ -3026,6 +3201,10 @@ export default function IntegraDashboard() {
       <div className="bg-glow bg-glow-a" />
       <div className="bg-glow bg-glow-b" />
 
+      {currentUser?.username === "dev" && (
+        <div className="test-badge">🧪 TEST ACCOUNT</div>
+      )}
+
       {showImport && (
         <div className="import-modal">
           <div className="import-panel glass">
@@ -3146,12 +3325,14 @@ export default function IntegraDashboard() {
             <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} />
             {isAdmin && <NavButton icon={DollarSign} label="Financials" active={tab === "financials"} onClick={() => setTab("financials")} />}
             {isAdmin && <NavButton icon={History} label="Login Log" active={tab === "log"} onClick={() => setTab("log")} />}
+            <NavButton icon={Settings} label="Settings" active={tab === "settings"} onClick={() => setTab("settings")} />
           </nav>
           <button className="btn-import" onClick={() => setShowImport(!showImport)}><Upload size={14} /> Import</button>
           <button className="btn-ghost" onClick={resetDefaults}><RotateCcw size={13} /></button>
           <button className="btn-logout" onClick={handleLogout} title={`Log out (${currentUser?.username})`}>
             <LogOut size={13} /> <span className="btn-logout-label">Logout</span>
           </button>
+          <MobileNavMenu tab={tab} setTab={setTab} isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} />
         </div>
       </header>
 
@@ -3162,24 +3343,18 @@ export default function IntegraDashboard() {
         {tab === "timeline" && <TimelineTab domes={domes} settings={settings} barges={barges} />}
         {tab === "financials" && isAdmin && (
           <FinancialsTab
-            barges={barges} hmaHistory={hmaHistory} setHmaHistory={setHmaHistory}
+            barges={barges} hpmHistory={hpmHistory} setHpmHistory={setHpmHistory}
             exchangeRateHistory={exchangeRateHistory} setExchangeRateHistory={setExchangeRateHistory}
-            getHmaPriceOnDate={getHmaPriceOnDate} getExchangeRateOnDate={getExchangeRateOnDate}
-            calculateRoyalty={calculateRoyalty} getHmaTrendPercent={getHmaTrendPercent}
+            getHpmOnDate={getHpmOnDate} getExchangeRateOnDate={getExchangeRateOnDate}
+            calculateRoyalty={calculateRoyalty} getHpmTrendPercent={getHpmTrendPercent}
             getExRateTrendPercent={getExRateTrendPercent} exportFinancialData={exportFinancialData}
           />
         )}
         {tab === "log" && isAdmin && <LoginLogTab loginHistory={loginHistory} />}
+        {tab === "settings" && (
+          <SettingsTab isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} exportAllForGoogleSheets={exportAllForGoogleSheets} />
+        )}
       </main>
-
-      <nav className="nav-mobile">
-        <NavButton icon={LayoutGrid} label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} mobile />
-        <NavButton icon={Layers} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} mobile />
-        <NavButton icon={Ship} label="Plan" active={tab === "plan"} onClick={() => setTab("plan")} mobile />
-        <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} mobile />
-        {isAdmin && <NavButton icon={DollarSign} label="Financials" active={tab === "financials"} onClick={() => setTab("financials")} mobile />}
-        {isAdmin && <NavButton icon={History} label="Log" active={tab === "log"} onClick={() => setTab("log")} mobile />}
-      </nav>
     </div>
   );
 }
@@ -3394,6 +3569,15 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap');
 
+/* Browsers apply a default 8px margin to <body> unless explicitly reset — without this,
+ * that default margin shows through as a white/light border around the app on a real
+ * deployment (this only stayed hidden in the artifact preview, which resets it at the
+ * platform level). Also sets html/body background to match .app's darkest tone, so
+ * there's no flash of white before React mounts, and no gap is visible even if .app's
+ * own min-height:100vh comes up a pixel short due to mobile browser chrome quirks. */
+html, body { margin: 0; padding: 0; background: #070A10; }
+#root { margin: 0; padding: 0; }
+
 * { box-sizing: border-box; }
 .app {
   min-height: 100vh;
@@ -3402,10 +3586,12 @@ const CSS = `
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   position: relative;
   overflow-x: hidden;
-  padding-bottom: 84px;
 }
 .bg-glow { position: fixed; border-radius: 999px; filter: blur(90px); opacity: .18; pointer-events: none; z-index: 0; }
 .bg-glow-a { width: 420px; height: 420px; background: #E35F0C; top: -120px; right: -100px; }
+.test-badge { position: fixed; top: 10px; right: 10px; background: rgba(248,113,113,.2); color: #F87171;
+  padding: 6px 12px; border-radius: 20px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .05em; border: 1px solid rgba(248,113,113,.4); z-index: 999; pointer-events: none; }
 .bg-glow-b { width: 380px; height: 380px; background: #C9A227; bottom: -140px; left: -80px; }
 
 .topbar { position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; flex-wrap: wrap; gap: 10px; }
@@ -3425,7 +3611,23 @@ const CSS = `
   font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s ease; white-space: nowrap; }
 .navbtn:hover { color: #EAF0F6; }
 .navbtn-active { background: rgba(227,95,12,.14); color: #E35F0C; }
-.nav-mobile { display: none; }
+.mobile-nav-menu { display: none; position: relative; }
+.hamburger-btn { display: flex; align-items: center; justify-content: center; width: 38px; height: 38px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); border-radius: 10px; color: #EAF0F6; cursor: pointer; flex-shrink: 0; }
+.hamburger-btn:hover { background: rgba(255,255,255,.12); }
+.mobile-nav-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 60; width: 240px; max-width: 80vw;
+  border-radius: 16px; overflow: hidden; padding: 0; }
+.mobile-nav-user { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.mobile-nav-username { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 13px; color: #EAF0F6; }
+.mobile-nav-role { font-size: 10.5px; color: #8A97A8; margin-top: 2px; text-transform: uppercase; letter-spacing: .02em; }
+.mobile-nav-list { display: flex; flex-direction: column; padding: 6px; }
+.mobile-nav-item { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; background: transparent;
+  border: none; border-radius: 9px; color: #B7C0CC; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
+.mobile-nav-item:hover { background: rgba(255,255,255,.06); color: #EAF0F6; }
+.mobile-nav-item-active { background: rgba(227,95,12,.14); color: #E35F0C; }
+.mobile-nav-logout { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 16px;
+  background: rgba(248,113,113,.08); border: none; border-top: 1px solid rgba(255,255,255,.08); color: #F87171; font-size: 13px; font-weight: 700; cursor: pointer; }
+.mobile-nav-logout:hover { background: rgba(248,113,113,.16); }
 
 .btn-import { display: flex; align-items: center; gap: 6px; background: rgba(227,95,12,.14); border: 1px solid rgba(227,95,12,.35);
   color: #E35F0C; font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600; padding: 8px 12px; border-radius: 10px;
@@ -3783,14 +3985,8 @@ const CSS = `
 }
 
 @media (max-width: 640px) {
-  .nav-desktop, .btn-import { display: none; }
-  .nav-mobile {
-    display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
-    background: rgba(10,14,20,.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-    border-top: 1px solid rgba(255,255,255,.08); padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-    justify-content: space-around;
-  }
-  .navbtn-mobile { flex-direction: column; gap: 3px; font-size: 10px; padding: 6px 10px; flex: 1; }
+  .nav-desktop, .btn-import, .btn-logout { display: none !important; }
+  .mobile-nav-menu { display: block; }
   .topbar { padding: 16px 16px 4px; }
   .hero { flex-direction: column; align-items: flex-start; padding: 20px; }
   .kpi-row { grid-template-columns: repeat(2, 1fr); width: 100%; }
@@ -3922,7 +4118,7 @@ const CSS = `
    * though it's invisible, which makes the print engine paginate against the entire
    * dashboard's height instead of just the small modal, producing blank leading pages
    * before the real content shows up. display:none collapses that height to zero. */
-  .bg-glow, .topbar, .content, .nav-mobile { display: none !important; }
+  .bg-glow, .topbar, .content { display: none !important; }
   .no-print { display: none !important; }
 
   /* Neutralize the modal's on-screen chrome (dark backdrop, centering, fixed
@@ -4032,7 +4228,7 @@ const CSS = `
 
 .royalty-table { background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.08); border-radius: 10px;
   overflow-x: auto; margin: 16px 0; }
-.royalty-header, .royalty-row { display: grid; grid-template-columns: 70px 100px 90px 90px 110px 150px 90px; gap: 10px; align-items: center; }
+.royalty-header, .royalty-row { display: grid; grid-template-columns: 70px 100px 90px 100px 110px 150px 90px; gap: 10px; align-items: center; }
 .royalty-header { background: rgba(255,255,255,.06); padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.08);
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; color: #8A97A8; }
 .royalty-row { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; color: #B7C0CC;
@@ -4072,8 +4268,33 @@ const CSS = `
 .mini-stat-value.mini-stat-success { color: #4ADE80; }
 .mini-stat-value.mini-stat-failed { color: #F87171; }
 
+/* ======================== SETTINGS TAB ======================== */
+.settings-header { padding: 24px 20px 16px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.settings-header h2 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; color: #EAF0F6; margin: 0; }
+.settings-section { padding: 20px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.settings-section:last-child { border-bottom: none; }
+.settings-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.settings-section-header h3 { font-size: 13px; font-weight: 700; color: #22D3B8; text-transform: uppercase; letter-spacing: .03em; margin: 0; }
+.section-badge { font-size: 9px; font-weight: 600; background: rgba(248,113,113,.2); color: #F87171;
+  padding: 4px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: .02em; }
+.settings-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); border-radius: 10px;
+  padding: 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.settings-card .card-content h4 { font-size: 13px; font-weight: 600; color: #EAF0F6; margin: 0 0 4px; }
+.settings-card .card-content p { font-size: 11px; color: #8A97A8; margin: 0; line-height: 1.4; }
+.btn-settings-action { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 8px 12px;
+  border-radius: 8px; cursor: pointer; text-transform: uppercase; letter-spacing: .02em; white-space: nowrap; border: 1px solid; flex-shrink: 0; }
+.btn-settings-action.btn-export { background: rgba(34,211,184,.15); border-color: rgba(34,211,184,.35); color: #22D3B8; }
+.btn-settings-action.btn-export:hover { background: rgba(34,211,184,.25); border-color: rgba(34,211,184,.5); }
+.btn-settings-action.btn-logout-action { background: rgba(248,113,113,.15); border-color: rgba(248,113,113,.35); color: #F87171; }
+.btn-settings-action.btn-logout-action:hover { background: rgba(248,113,113,.25); border-color: rgba(248,113,113,.5); }
+
+@media (max-width: 768px) {
+  .settings-card { flex-direction: column; align-items: flex-start; }
+  .btn-settings-action { width: 100%; justify-content: center; }
+}
+
 @media (max-width: 900px) {
-  .royalty-header, .royalty-row { grid-template-columns: 55px 80px 70px 70px 90px 120px 70px; gap: 6px; font-size: 11px; }
+  .royalty-header, .royalty-row { grid-template-columns: 55px 80px 70px 80px 90px 120px 70px; gap: 6px; font-size: 11px; }
   .log-header-row, .log-row { grid-template-columns: 1fr 90px 80px; font-size: 11px; }
 }
 @media (max-width: 640px) {
@@ -4089,7 +4310,7 @@ const CSS = `
   .btn-logout-label { display: none; }
   .financial-cards-row { grid-template-columns: 1fr; }
   .royalty-table { overflow-x: auto; }
-  .royalty-header, .royalty-row { grid-template-columns: 50px 70px 60px 60px 80px 100px 60px; font-size: 10px; padding: 10px 12px; }
+  .royalty-header, .royalty-row { grid-template-columns: 50px 70px 60px 70px 80px 100px 60px; font-size: 10px; padding: 10px 12px; }
   .log-header-row, .log-row { grid-template-columns: 1fr 70px 70px; font-size: 10px; padding: 10px 12px; }
 }
 `;
