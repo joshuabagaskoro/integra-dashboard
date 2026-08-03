@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
   Layers, ChevronDown, RotateCcw, Gauge, Upload, X,
-  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw
+  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw, MessageSquare
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -512,6 +512,52 @@ const fmt = (n, d = 0) => Number(n || 0).toLocaleString("en-US", { minimumFracti
 // Current .stock decreases as barges finalize; initialStock - stock = stock already barged out.
 function withInitialStock(list) {
   return list.map((d) => (d.initialStock !== undefined ? d : { ...d, initialStock: d.stock }));
+}
+
+// Client-side regex parser for operation team loading reports — genuinely just pattern
+// matching, no API call of any kind. (The build spec's own overview mentioned "Claude
+// API Parser," but its implementation section and troubleshooting notes both confirm
+// this is regex-only — free, instant, no keys, no serverless function. Labeling it as
+// an AI/Claude parser anywhere in the UI would be inaccurate, so all such references
+// were corrected to just "Parse Report" throughout.)
+function parseLoadingReportText(text) {
+  try {
+    if (!text || text.length === 0) return { error: "Text is empty" };
+
+    const result = {
+      shipmentNumber: null, qtyOnBoard: null, progressPercent: null, balanceDue: null, reportDate: null,
+    };
+
+    const shipmentMatch = text.match(/(?:Shipment|Barge|BG\.?)\s*(?:#)?\s*(\d+)/i);
+    if (shipmentMatch) result.shipmentNumber = parseInt(shipmentMatch[1]);
+
+    // Indonesian-style numbers assumed (dot = thousands separator, e.g. "1.800" = 1800),
+    // matching the real report format this was built against.
+    const qtyMatch = text.match(/(?:Qty\s+on\s+board|Qty|QTY)[:\s]+([0-9.,]+)\s*(?:wmt|WMT)?/i);
+    if (qtyMatch) result.qtyOnBoard = parseFloat(qtyMatch[1].replace(/\./g, "").replace(/,/g, "."));
+
+    const progressMatch = text.match(/(?:Progress|progress)[:\s]+(\d+)\s*%?/i);
+    if (progressMatch) result.progressPercent = parseInt(progressMatch[1]);
+
+    const balanceMatch = text.match(/(?:Blc|Balance\s+(?:due)?)[:\s]+([0-9.,]+)\s*(?:wmt|WMT)?/i);
+    if (balanceMatch) result.balanceDue = parseFloat(balanceMatch[1].replace(/\./g, "").replace(/,/g, "."));
+
+    const dateMatch = text.match(/(?:Tgl\.?|Date)?[:\s]*(\d{1,2})[-.\/](\d{1,2})[-.\/](\d{4})/);
+    if (dateMatch) {
+      const [, d, m, y] = dateMatch;
+      result.reportDate = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    }
+
+    const missingFields = Object.entries(result).filter(([, v]) => v === null).map(([k]) => k);
+    return {
+      ...result,
+      missingFields: missingFields.length > 0 ? missingFields : null,
+      confidence: Object.values(result).filter((v) => v !== null).length / 5,
+    };
+  } catch (error) {
+    console.error("Parse error:", error);
+    return { error: "Parse error: " + error.message };
+  }
 }
 
 function defaultShipDate(no, planTarget) {
@@ -1981,7 +2027,7 @@ function LoginLogTab({ loginHistory }) {
 /* ============================================================
  * SettingsTab — Data Export (admin only) and Account (everyone).
  * ============================================================ */
-function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError }) {
+function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus }) {
   return (
     <div className="stack">
       <section className="glass panel" style={{ padding: 0 }}>
@@ -2014,6 +2060,21 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                 <AlertTriangle size={13} /> {lastSyncError}
               </div>
             )}
+          </div>
+        )}
+
+        {isAdmin && (
+          <div className="settings-section">
+            <div className="settings-section-header">
+              <h3>Exchange Rate Auto-Fetch</h3>
+              <span className="section-badge">Admin Only</span>
+            </div>
+            <div className="settings-card">
+              <div className="card-content">
+                <h4>{exRateFetchStatus}</h4>
+                <p>Checks once/day (recheck runs hourly, only fetches if today's date hasn't been fetched yet) via a free public API. Manual "Update Rate" on the Financials tab always works regardless of this.</p>
+              </div>
+            </div>
           </div>
         )}
 
@@ -2619,6 +2680,101 @@ function WelcomeScreen({ username, role }) {
   );
 }
 
+/* ============================================================
+ * Loading Report Assistant — dev-account-only for now. Paste a loading
+ * report chat, regex-parses it (no API), review/edit the extracted
+ * fields, then confirm to update the barge + push to Sheets.
+ * ============================================================ */
+function LoadingReportModal({ onClose, onSubmit }) {
+  const [text, setText] = useState("");
+
+  const handleParse = () => {
+    if (!text.trim()) { alert("⚠️ Please paste a loading report"); return; }
+    const parsed = parseLoadingReportText(text);
+    if (parsed.error) { alert("❌ Parse error: " + parsed.error); return; }
+    onSubmit(parsed);
+    setText("");
+  };
+
+  return (
+    <div className="validation-modal">
+      <div className="validation-panel glass" style={{ maxWidth: 620 }}>
+        <div className="validation-head" style={{ color: "#22D3B8", background: "linear-gradient(135deg, rgba(34,211,184,.08), rgba(255,255,255,.01))", borderBottom: "1px solid rgba(34,211,184,.2)" }}>
+          <MessageSquare size={20} style={{ color: "#22D3B8" }} />
+          <span>Parse Shipment Loading Report</span>
+          <button className="validation-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="validation-body">
+          <p>Paste the loading report from the operation team's chat. This extracts Shipment #, Qty On Board, Progress %, Balance Due, and Date via pattern matching — instant, no API call.</p>
+          <div className="form-group">
+            <label>Loading Report Chat</label>
+            <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} className="login-input"
+              style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "11.5px", resize: "vertical", width: "100%" }}
+              placeholder="Paste chat report here... (e.g. Shipment 09, Qty on board 1.800 wmt, Progress 17%, Blc: 8.700 wmt, Tgl. 02-08-2026)" />
+          </div>
+          <div className="validation-actions">
+            <button className="btn-ghost" onClick={onClose}>Cancel</button>
+            <button className="btn-primary btn-sync-sheets" onClick={handleParse} disabled={!text.trim()}>Parse Report</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LoadingReportReviewModal({ data, onClose, onConfirm, isSubmitting }) {
+  const [edited, setEdited] = useState(data);
+
+  const handleConfirm = () => {
+    if (!edited.shipmentNumber) { alert("⚠️ Shipment number required"); return; }
+    onConfirm(edited);
+  };
+
+  const field = (label, key, type = "number") => (
+    <div className="form-group">
+      <label>{label}</label>
+      <input type={type} className="login-input" value={edited[key] ?? ""}
+        onChange={(e) => setEdited((prev) => ({ ...prev, [key]: type === "number" ? (parseFloat(e.target.value) || null) : e.target.value }))} />
+    </div>
+  );
+
+  return (
+    <div className="validation-modal">
+      <div className="validation-panel glass" style={{ maxWidth: 560 }}>
+        <div className="validation-head" style={{ color: "#4ADE80", background: "linear-gradient(135deg, rgba(74,222,128,.08), rgba(255,255,255,.01))", borderBottom: "1px solid rgba(74,222,128,.2)" }}>
+          <CheckCircle2 size={20} style={{ color: "#4ADE80" }} />
+          <span>Review Parsed Data</span>
+          <button className="validation-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="validation-body">
+          <p>Review the extracted data below. Edit anything that looks off, then confirm to save.</p>
+          {data.missingFields && (
+            <div className="lab-list" style={{ marginBottom: 16 }}>
+              <div className="lab-item">
+                <span className="lab-dome">Not found in the text — fill in manually:</span>
+                <span className="lab-detail">{data.missingFields.join(", ")}</span>
+              </div>
+            </div>
+          )}
+          <div className="review-grid">
+            {field("Shipment Number (Barge #)", "shipmentNumber")}
+            {field("Qty On Board (WMT)", "qtyOnBoard")}
+            {field("Progress (%)", "progressPercent")}
+            {field("Balance Due (WMT)", "balanceDue")}
+            {field("Report Date", "reportDate", "date")}
+          </div>
+          <div className="validation-actions">
+            <button className="btn-ghost" onClick={onClose} disabled={isSubmitting}>Cancel</button>
+            <button className="btn-primary btn-sync-sheets" onClick={handleConfirm} disabled={isSubmitting}>
+              {isSubmitting ? "Saving…" : "Confirm & Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BargeStatusModal({ barge, domes, onClose }) {
   const domesById = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
 
@@ -2854,10 +3010,18 @@ export default function IntegraDashboard() {
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [sheetsSyncStatus, setSheetsSyncStatus] = useState("Ready");
   const [lastSyncError, setLastSyncError] = useState("");
+  const [exRateFetchStatus, setExRateFetchStatus] = useState("Not checked yet this session");
   const [exchangeRateHistory, setExchangeRateHistory] = useState(DEFAULT_EXCHANGE_RATE_HISTORY);
 
   const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
   const [pendingFinalize, setPendingFinalize] = useState(null); // { bargeNo, violations } awaiting confirm/cancel
+
+  // Loading Report Assistant — dev account only while this is being tried out
+  const isDevAccount = currentUser?.username === "dev";
+  const [showLoadingReportModal, setShowLoadingReportModal] = useState(false);
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewData, setReviewData] = useState(null);
+  const [isSubmittingLoadingReport, setIsSubmittingLoadingReport] = useState(false);
   const [invoiceBarge, setInvoiceBarge] = useState(null); // barge object currently being invoiced, or null
   const [exportBarge, setExportBarge] = useState(null); // barge object currently being exported, or null
   const domesByIdTop = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
@@ -3009,20 +3173,38 @@ export default function IntegraDashboard() {
   // function (see api/fetch-exchange-rate.js — a separate file, deployed alongside this
   // one on Vercel). Fails silently outside that deployment (e.g. in local preview),
   // which is intentional — manual "Update Rate" always remains available as a fallback.
+  //
+  // Two fixes vs. the original version: (1) this only ran once per login session before
+  // — a tab left open across midnight would never re-check, since [isAdmin] only
+  // re-fires on login/logout, not on a new day. Added a periodic recheck (same pattern
+  // as the Sheets sync) so it actually re-evaluates "has the date changed?" hourly.
+  // (2) errors were completely silent before — now surfaced via exRateFetchStatus so
+  // it's visible in Settings rather than failing invisibly like the Sheets sync did.
+  const runExRateAutoFetch = async () => {
+    if (!isAdmin) return;
+    try {
+      const today = new Date().toISOString().split("T")[0];
+      if (localStorage.getItem("lastExRateFetch") === today) return;
+      const res = await fetch("/api/fetch-exchange-rate");
+      if (!res.ok) {
+        const raw = await res.text();
+        throw new Error(raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 150) || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (!data.rate) throw new Error("Response missing rate field");
+      setExchangeRateHistory((prev) => [{ date: data.date, rate: data.rate, source: data.source }, ...prev].slice(0, 180));
+      localStorage.setItem("lastExRateFetch", today);
+      setExRateFetchStatus(`✅ Auto-fetched ${data.date}`);
+    } catch (e) {
+      console.error("Exchange rate auto-fetch failed:", e);
+      setExRateFetchStatus(`❌ Auto-fetch failed: ${e.message}`);
+    }
+  };
   useEffect(() => {
     if (!isAdmin) return;
-    (async () => {
-      try {
-        const today = new Date().toISOString().split("T")[0];
-        if (localStorage.getItem("lastExRateFetch") === today) return;
-        const res = await fetch("/api/fetch-exchange-rate");
-        const data = await res.json();
-        if (data.rate) {
-          setExchangeRateHistory((prev) => [{ date: data.date, rate: data.rate, source: data.source }, ...prev].slice(0, 180));
-          localStorage.setItem("lastExRateFetch", today);
-        }
-      } catch (e) { /* serverless endpoint not available in this context — manual update still works */ }
-    })();
+    runExRateAutoFetch();
+    const exRateInterval = setInterval(runExRateAutoFetch, 60 * 60 * 1000); // recheck hourly
+    return () => clearInterval(exRateInterval);
   }, [isAdmin]);
 
   const exportFinancialData = () => {
@@ -3059,12 +3241,13 @@ export default function IntegraDashboard() {
     domes.map((d) => [d.id, d.contractor, d.stock, d.initialStock !== undefined ? d.initialStock : d.stock, fmt(d.ni, 2), fmt(d.fe, 2), fmt(d.co, 2), fmt(d.sio2, 2), fmt(d.mgo, 2), fmt(d.al2o3, 2), fmt(d.simg, 2), d.location || "", d.source])
   );
   const exportBargesCSV = () => toCSV(
-    ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments"],
+    ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments", "Qty On Board", "Progress %", "Balance Due", "Last Updated"],
     barges.map((b) => [
       String(b.no).padStart(2, "0"), b.shipDate, b.bargeName || "", b.tugboatName || "",
       fmt(b.totalWMT), fmt(b.grade, 2), b.status, b.finalized ? "Yes" : "No",
       (b.sources || []).map((s) => `${s.id}:${s.amt}WMT`).join("; "),
       b.stockAdjustments && Object.keys(b.stockAdjustments).length ? JSON.stringify(b.stockAdjustments) : "",
+      b.qtyOnBoard || "", b.progressPercent || "", b.balanceDue || "", b.lastUpdated || "",
     ])
   );
   const exportHPMHistoryCSV = () => toCSV(
@@ -3145,6 +3328,10 @@ export default function IntegraDashboard() {
       totalWMT: parseFloat(row["Total WMT"]) || 0, grade: parseFloat(row["Grade (Ni %)"]) || 0,
       status: row["Status"] || "draft", finalized: row["Finalized"] === "Yes",
       sources, stockAdjustments,
+      qtyOnBoard: row["Qty On Board"] ? parseFloat(row["Qty On Board"]) : undefined,
+      progressPercent: row["Progress %"] ? parseInt(row["Progress %"]) : undefined,
+      balanceDue: row["Balance Due"] ? parseFloat(row["Balance Due"]) : undefined,
+      lastUpdated: row["Last Updated"] || undefined,
     };
   };
 
@@ -3229,12 +3416,13 @@ export default function IntegraDashboard() {
   const writeBargesToSheets = (bargesOverride) => {
     const list = bargesOverride || barges;
     const csv = toCSV(
-      ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments"],
+      ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments", "Qty On Board", "Progress %", "Balance Due", "Last Updated"],
       list.map((b) => [
         String(b.no).padStart(2, "0"), b.shipDate, b.bargeName || "", b.tugboatName || "",
         fmt(b.totalWMT), fmt(b.grade, 2), b.status, b.finalized ? "Yes" : "No",
         (b.sources || []).map((s) => `${s.id}:${s.amt}WMT`).join("; "),
         b.stockAdjustments && Object.keys(b.stockAdjustments).length ? JSON.stringify(b.stockAdjustments) : "",
+        b.qtyOnBoard || "", b.progressPercent || "", b.balanceDue || "", b.lastUpdated || "",
       ])
     );
     return writeToSheets("Barges", csv);
@@ -3269,6 +3457,43 @@ export default function IntegraDashboard() {
   const onDataCommitted = () => {
     if (!isAdmin) return;
     setTimeout(() => { writeDomesToSheets(); writeBargesToSheets(); }, 500);
+  };
+
+  const handleLoadingReportParsed = (parsedData) => {
+    if (parsedData.missingFields?.length) console.warn("⚠️ Loading report — missing fields:", parsedData.missingFields);
+    setReviewData(parsedData);
+    setShowLoadingReportModal(false);
+    setShowReviewModal(true);
+  };
+
+  const handleLoadingProgressConfirm = async (confirmedData) => {
+    setIsSubmittingLoadingReport(true);
+    try {
+      const bargeExists = barges.some((b) => b.no === confirmedData.shipmentNumber);
+      if (!bargeExists) { alert(`❌ Barge #${confirmedData.shipmentNumber} not found`); return; }
+
+      const updatedBarges = barges.map((b) => b.no !== confirmedData.shipmentNumber ? b : {
+        ...b,
+        qtyOnBoard: confirmedData.qtyOnBoard || 0,
+        progressPercent: confirmedData.progressPercent || 0,
+        balanceDue: confirmedData.balanceDue || 0,
+        lastUpdated: confirmedData.reportDate || new Date().toISOString().split("T")[0],
+        // Separate field from the existing Ni-blend-quality `status` (exact/excess/
+        // deficit/etc, used by StatusBadge and the Financials royalty table) — reusing
+        // that field for loading progress would have broken both.
+        loadingStatus: confirmedData.progressPercent === 100 ? "loaded" : "loading",
+      });
+      setBarges(updatedBarges);
+      await writeBargesToSheets(updatedBarges);
+      alert(`✅ Loading progress saved! Barge #${confirmedData.shipmentNumber} updated.`);
+      setShowReviewModal(false);
+      setReviewData(null);
+    } catch (error) {
+      console.error("Error saving loading progress:", error);
+      alert("❌ Error: " + error.message);
+    } finally {
+      setIsSubmittingLoadingReport(false);
+    }
   };
 
   // finalize / reopen actually mutates the master stock here, since it needs setDomes
@@ -3419,6 +3644,20 @@ export default function IntegraDashboard() {
         <div className="test-badge">🧪 TEST ACCOUNT</div>
       )}
 
+      {isDevAccount && (
+        <button className="loading-assistant-btn" onClick={() => setShowLoadingReportModal(true)} title="Parse shipment loading report">
+          <MessageSquare size={20} />
+          <span>Chat</span>
+        </button>
+      )}
+      {isDevAccount && showLoadingReportModal && (
+        <LoadingReportModal onClose={() => setShowLoadingReportModal(false)} onSubmit={handleLoadingReportParsed} />
+      )}
+      {isDevAccount && showReviewModal && reviewData && (
+        <LoadingReportReviewModal data={reviewData} onClose={() => { setShowReviewModal(false); setReviewData(null); }}
+          onConfirm={handleLoadingProgressConfirm} isSubmitting={isSubmittingLoadingReport} />
+      )}
+
       {showImport && (
         <div className="import-modal">
           <div className="import-panel glass">
@@ -3567,7 +3806,7 @@ export default function IntegraDashboard() {
         {tab === "log" && isAdmin && <LoginLogTab loginHistory={loginHistory} />}
         {tab === "settings" && (
           <SettingsTab isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} exportAllForGoogleSheets={exportAllForGoogleSheets}
-            syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} lastSyncError={lastSyncError} />
+            syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} lastSyncError={lastSyncError} exRateFetchStatus={exRateFetchStatus} />
         )}
       </main>
     </div>
@@ -4507,6 +4746,19 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .sync-error-detail { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px 12px;
   background: rgba(248,113,113,.1); border: 1px solid rgba(248,113,113,.25); border-radius: 8px;
   color: #FCA5A5; font-size: 11.5px; line-height: 1.4; font-family: 'JetBrains Mono', monospace; }
+
+/* ======================== LOADING REPORT ASSISTANT (dev account only) ======================== */
+.loading-assistant-btn { position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, #22D3B8 0%, #14B8A6 100%); border: none; color: #0A0E14; font-size: 10px; font-weight: 700;
+  cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  box-shadow: 0 4px 12px rgba(34,211,184,.35); transition: transform .15s, box-shadow .15s; z-index: 400; }
+.loading-assistant-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(34,211,184,.45); }
+.review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 8px; }
+
+@media (max-width: 768px) {
+  .loading-assistant-btn { bottom: 16px; right: 16px; width: 48px; height: 48px; font-size: 9px; }
+  .review-grid { grid-template-columns: 1fr; }
+}
 
 @media (max-width: 768px) {
   .settings-card { flex-direction: column; align-items: flex-start; }
