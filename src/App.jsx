@@ -3358,14 +3358,23 @@ export default function IntegraDashboard() {
   //    table) on every sync.
   //  - Initial Stock and Stock Adjustments now round-trip too, so the "Stock Out"
   //    tracking and the finalize/reopen deficit-reversal feature both survive a sync.
+  //
+  // cleanNum strips thousands-separator commas before parsing (e.g. "10,489" -> 10489).
+  // This is a defensive second layer on top of the UNFORMATTED_VALUE fix in
+  // api/sheets-read.js — that fix handles number-*formatted* cells, but if a cell was
+  // ever typed as literal text containing a comma, this catches that case too. Without
+  // either fix, parseFloat("10,489") silently returns just 10 — it stops at the first
+  // non-numeric character — which is exactly why every barge was showing "10 WMT".
+  const cleanNum = (v) => parseFloat(String(v ?? "").replace(/,/g, "")) || 0;
+
   const mapDomeFromSheetRow = (row) => ({
     id: row["Dome ID"], contractor: row["Contractor"],
-    stock: parseFloat(row["Stock (WMT)"]) || 0,
+    stock: cleanNum(row["Stock (WMT)"]),
     initialStock: row["Initial Stock (WMT)"] !== "" && row["Initial Stock (WMT)"] !== undefined
-      ? parseFloat(row["Initial Stock (WMT)"]) : (parseFloat(row["Stock (WMT)"]) || 0),
-    ni: parseFloat(row["Ni %"]) || 0, fe: parseFloat(row["Fe %"]) || 0, co: parseFloat(row["Co %"]) || 0,
-    sio2: parseFloat(row["SiO2 %"]) || 0, mgo: parseFloat(row["MgO %"]) || 0,
-    al2o3: parseFloat(row["Al2O3 %"]) || 0, simg: parseFloat(row["Si:Mg"]) || 0,
+      ? cleanNum(row["Initial Stock (WMT)"]) : cleanNum(row["Stock (WMT)"]),
+    ni: cleanNum(row["Ni %"]), fe: cleanNum(row["Fe %"]), co: cleanNum(row["Co %"]),
+    sio2: cleanNum(row["SiO2 %"]), mgo: cleanNum(row["MgO %"]),
+    al2o3: cleanNum(row["Al2O3 %"]), simg: cleanNum(row["Si:Mg"]),
     location: row["Location"] || "", source: row["Source"] || "inventory",
   });
 
@@ -3375,21 +3384,21 @@ export default function IntegraDashboard() {
       const [id, amtStr] = s.split(":");
       const domeId = (id || "").trim();
       const dome = domesForGrade.find((d) => d.id === domeId);
-      return { id: domeId, amt: parseFloat(amtStr) || 0, grade: dome ? dome.ni : 0 };
+      return { id: domeId, amt: cleanNum(amtStr), grade: dome ? dome.ni : 0 };
     });
     let stockAdjustments;
     try { stockAdjustments = row["Stock Adjustments"] ? JSON.parse(row["Stock Adjustments"]) : undefined; }
     catch (e) { stockAdjustments = undefined; }
     return {
-      no: parseInt(row["Barge No"]) || 0,
+      no: parseInt(String(row["Barge No"] ?? "").replace(/,/g, "")) || 0,
       shipDate: row["Ship Date"] || new Date().toISOString().split("T")[0],
       bargeName: row["Barge Name"] || "", tugboatName: row["Tugboat Name"] || "",
-      totalWMT: parseFloat(row["Total WMT"]) || 0, grade: parseFloat(row["Grade (Ni %)"]) || 0,
+      totalWMT: cleanNum(row["Total WMT"]), grade: cleanNum(row["Grade (Ni %)"]),
       status: row["Status"] || "draft", finalized: row["Finalized"] === "Yes",
       sources, stockAdjustments,
-      qtyOnBoard: row["Qty On Board"] ? parseFloat(row["Qty On Board"]) : undefined,
-      progressPercent: row["Progress %"] ? parseInt(row["Progress %"]) : undefined,
-      balanceDue: row["Balance Due"] ? parseFloat(row["Balance Due"]) : undefined,
+      qtyOnBoard: row["Qty On Board"] !== "" && row["Qty On Board"] !== undefined ? cleanNum(row["Qty On Board"]) : undefined,
+      progressPercent: row["Progress %"] !== "" && row["Progress %"] !== undefined ? Math.round(cleanNum(row["Progress %"])) : undefined,
+      balanceDue: row["Balance Due"] !== "" && row["Balance Due"] !== undefined ? cleanNum(row["Balance Due"]) : undefined,
       lastUpdated: row["Last Updated"] || undefined,
     };
   };
