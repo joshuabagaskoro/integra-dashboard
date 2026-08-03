@@ -3466,11 +3466,17 @@ export default function IntegraDashboard() {
       const response = await fetch("/api/sheets-read?sheetName=HMAHistory");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
-      if (!data.length) { setLastSyncError("HMAHistory tab returned 0 rows."); return null; }
+      if (!data.length) { setLastSyncError("HMAHistory tab returned 0 rows — check the tab has data below the header row."); return null; }
       const transformed = data
         .map((row) => ({ date: row["Date"], price: cleanNum(row["Price (USD/WMT)"]), unit: "USD/WMT" }))
         .filter((h) => h.date)
         .sort((a, b) => new Date(b.date) - new Date(a.date));
+      // data.length > 0 but transformed is empty means every row failed the .date check —
+      // almost always a header-name mismatch (expects exactly "Date" in the header row),
+      // not a real "no data" case. Treating this as silent success was the actual bug:
+      // an empty array is still truthy, so the old code reported "✅ Synced" while
+      // quietly updating nothing.
+      if (!transformed.length) { setLastSyncError('HMAHistory: 0 usable rows — check row 1 has a column header exactly "Date" (case-sensitive).'); return null; }
       setHpmHistory(transformed);
       return transformed;
     } catch (error) {
@@ -3485,11 +3491,12 @@ export default function IntegraDashboard() {
       const response = await fetch("/api/sheets-read?sheetName=ExchangeRates");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
-      if (!data.length) { setLastSyncError("ExchangeRates tab returned 0 rows."); return null; }
+      if (!data.length) { setLastSyncError("ExchangeRates tab returned 0 rows — check the tab has data below the header row."); return null; }
       const transformed = data
         .map((row) => ({ date: row["Date"], rate: cleanNum(row["Rate (IDR/USD)"]), source: row["Source"] || "manual" }))
         .filter((e) => e.date)
         .sort((a, b) => new Date(b.date) - new Date(a.date));
+      if (!transformed.length) { setLastSyncError('ExchangeRates: 0 usable rows — check row 1 has a column header exactly "Date" (case-sensitive).'); return null; }
       setExchangeRateHistory(transformed);
       return transformed;
     } catch (error) {
