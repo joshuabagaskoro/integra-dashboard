@@ -3287,6 +3287,13 @@ export default function IntegraDashboard() {
     return str.includes(",") || str.includes('"') ? `"${str.replace(/"/g, '""')}"` : str;
   };
   const toCSV = (headers, rows) => [headers.join(","), ...rows.map((r) => r.map(csvEscape).join(","))].join("\n");
+  // For the live Sheets write path specifically: build the row arrays directly rather
+  // than encoding to a CSV string and re-parsing it back into arrays. That round-trip
+  // was the actual bug — a genuinely empty cell (e.g. an unnamed draft barge's blank
+  // Barge Name/Tugboat Name) has no non-comma character for a regex-based re-splitter
+  // to match, so it silently vanished and shifted every later column left by one. Rows
+  // built directly, never stringified, can't have this problem.
+  const toRows = (headers, rows) => [headers, ...rows.map((r) => r.map((cell) => String(cell ?? "")))];
 
   const exportDomesCSV = () => toCSV(
     ["Dome ID", "Contractor", "Stock (WMT)", "Initial Stock (WMT)", "Ni %", "Fe %", "Co %", "SiO2 %", "MgO %", "Al2O3 %", "Si:Mg", "Location", "Source"],
@@ -3435,13 +3442,8 @@ export default function IntegraDashboard() {
     }
   };
 
-  const writeToSheets = async (sheetName, csvText) => {
+  const writeToSheets = async (sheetName, rows) => {
     try {
-      const rows = csvText.split("\n").map((line) =>
-        // basic CSV split good enough for our own toCSV output (fields we quote never
-        // contain embedded newlines)
-        line.match(/(".*?"|[^,]+)(?=,|$)/g)?.map((f) => f.replace(/^"|"$/g, "").replace(/""/g, '"')) || []
-      );
       const response = await fetch("/api/sheets-write", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3459,15 +3461,15 @@ export default function IntegraDashboard() {
   // value) — falls back to current state for the manual "Sync Now" case.
   const writeDomesToSheets = (domesOverride) => {
     const list = domesOverride || domes;
-    const csv = toCSV(
+    const rows = toRows(
       ["Dome ID", "Contractor", "Stock (WMT)", "Initial Stock (WMT)", "Ni %", "Fe %", "Co %", "SiO2 %", "MgO %", "Al2O3 %", "Si:Mg", "Location", "Source"],
       list.map((d) => [d.id, d.contractor, d.stock, d.initialStock !== undefined ? d.initialStock : d.stock, fmt(d.ni, 2), fmt(d.fe, 2), fmt(d.co, 2), fmt(d.sio2, 2), fmt(d.mgo, 2), fmt(d.al2o3, 2), fmt(d.simg, 2), d.location || "", d.source])
     );
-    return writeToSheets("Domes", csv);
+    return writeToSheets("Domes", rows);
   };
   const writeBargesToSheets = (bargesOverride) => {
     const list = bargesOverride || barges;
-    const csv = toCSV(
+    const rows = toRows(
       ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments", "Qty On Board", "Progress %", "Balance Due", "Last Updated"],
       list.map((b) => [
         String(b.no).padStart(2, "0"), b.shipDate, b.bargeName || "", b.tugboatName || "",
@@ -3477,8 +3479,9 @@ export default function IntegraDashboard() {
         b.qtyOnBoard || "", b.progressPercent || "", b.balanceDue || "", b.lastUpdated || "",
       ])
     );
-    return writeToSheets("Barges", csv);
+    return writeToSheets("Barges", rows);
   };
+
 
   const syncWithSheets = async (force = false) => {
     if (!isAdmin) return;
