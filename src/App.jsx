@@ -1790,7 +1790,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
 
 /* ----------------------------- Timeline tab ----------------------------- */
 
-function TimelineTab({ barges, settings }) {
+function TimelineTab({ barges, settings, isDevAccount }) {
   const monthCounts = useMemo(() => {
     const arr = MONTHS.map(() => ({ final: 0, draft: 0 }));
     barges.forEach((b) => {
@@ -1807,6 +1807,14 @@ function TimelineTab({ barges, settings }) {
   const monthsLeft = Math.max(1, 12 - currentMonthIdx);
   const remaining = settings.planTarget - finalizedTotal;
 
+  // Barges that have been through the Loading Report tracker at least once — a barge
+  // with no report yet simply won't have these fields, so this naturally only includes
+  // barges someone has actually reported progress for.
+  const loadingBarges = useMemo(() => barges.filter((b) => b.progressPercent !== undefined).sort((a, b) => a.no - b.no), [barges]);
+  const totalQtyOnBoard = loadingBarges.reduce((s, b) => s + (b.qtyOnBoard || 0), 0);
+  const totalLoadingCapacity = loadingBarges.reduce((s, b) => s + (b.totalWMT || 0), 0);
+  const overallLoadingPct = totalLoadingCapacity > 0 ? (totalQtyOnBoard / totalLoadingCapacity) * 100 : 0;
+
   return (
     <div className="stack">
       <section className="glass summary-strip">
@@ -1815,6 +1823,45 @@ function TimelineTab({ barges, settings }) {
         <Kpi label="Months left in 2026" value={`${monthsLeft}`} unit="mo" />
         <Kpi label="Required pace" value={fmt(remaining / monthsLeft, 1)} unit="barges/mo" />
       </section>
+
+      {isDevAccount && loadingBarges.length > 0 && (
+        <section className="glass panel">
+          <div className="panel-head"><MessageSquare size={16} /><span>Loading Progress</span></div>
+          <div className="loading-overall">
+            <div className="loading-overall-numbers">
+              <span className="loading-overall-value">{fmt(totalQtyOnBoard)}</span>
+              <span className="loading-overall-sep">/</span>
+              <span className="loading-overall-total">{fmt(totalLoadingCapacity)} WMT</span>
+              <span className="loading-overall-pct">{fmt(overallLoadingPct, 1)}%</span>
+            </div>
+            <div className="loading-bar-track">
+              <div className="loading-bar-fill" style={{ width: `${Math.min(100, overallLoadingPct)}%` }} />
+            </div>
+            <div className="note" style={{ marginTop: 8 }}>Across {loadingBarges.length} barge{loadingBarges.length !== 1 ? "s" : ""} with a loading report on file.</div>
+          </div>
+
+          <div className="loading-barge-list">
+            {loadingBarges.map((b) => (
+              <div key={b.no} className="loading-barge-row">
+                <div className="loading-barge-head">
+                  <span className="tracker-no">#{String(b.no).padStart(2, "0")}</span>
+                  <span className={`loading-status-badge ${b.loadingStatus === "loaded" ? "loading-status-done" : "loading-status-active"}`}>
+                    {b.loadingStatus === "loaded" ? "Loaded" : "Loading"}
+                  </span>
+                  <span className="loading-barge-updated">Updated {b.lastUpdated || "—"}</span>
+                </div>
+                <div className="loading-bar-track loading-bar-track-sm">
+                  <div className="loading-bar-fill" style={{ width: `${Math.min(100, b.progressPercent || 0)}%` }} />
+                </div>
+                <div className="loading-barge-meta">
+                  <span>{fmt(b.qtyOnBoard)} / {fmt(b.totalWMT)} WMT ({fmt(b.progressPercent, 0)}%)</span>
+                  <span>Balance: {fmt(b.balanceDue)} WMT</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="glass panel">
         <div className="panel-head"><TrendingUp size={16} /><span>Shipping schedule by month</span></div>
@@ -1846,6 +1893,11 @@ function TimelineTab({ barges, settings }) {
               <span className="tracker-month">{b.shipDate}</span>
               <span className="tracker-grade">{b.totalWMT > 0 ? `${fmt(b.grade, 2)}% Ni` : "—"}</span>
               <StatusBadge status={b.status} />
+              {isDevAccount && b.progressPercent !== undefined && (
+                <span className={`loading-status-badge ${b.loadingStatus === "loaded" ? "loading-status-done" : "loading-status-active"}`}>
+                  {fmt(b.progressPercent, 0)}%
+                </span>
+              )}
               {b.finalized && <Lock size={12} className="lock-icon" />}
             </div>
           ))}
@@ -3793,7 +3845,7 @@ export default function IntegraDashboard() {
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && <StockTab domes={domes} />}
         {tab === "plan" && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} />}
-        {tab === "timeline" && <TimelineTab domes={domes} settings={settings} barges={barges} />}
+        {tab === "timeline" && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} />}
         {tab === "financials" && isAdmin && (
           <FinancialsTab
             barges={barges} hpmHistory={hpmHistory} setHpmHistory={setHpmHistory}
@@ -4753,6 +4805,31 @@ html, body { margin: 0; padding: 0; background: #070A10; }
   cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   box-shadow: 0 4px 12px rgba(34,211,184,.35); transition: transform .15s, box-shadow .15s; z-index: 400; }
 .loading-assistant-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(34,211,184,.45); }
+
+/* Loading Progress section (Timeline tab) */
+.loading-overall { margin-bottom: 18px; }
+.loading-overall-numbers { display: flex; align-items: baseline; gap: 6px; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }
+.loading-overall-value { font-size: 22px; font-weight: 700; color: #22D3B8; }
+.loading-overall-sep { color: #667080; font-size: 16px; }
+.loading-overall-total { font-size: 15px; color: #B7C0CC; }
+.loading-overall-pct { margin-left: auto; font-size: 15px; font-weight: 700; color: #EAF0F6; }
+.loading-bar-track { width: 100%; height: 10px; background: rgba(255,255,255,.08); border-radius: 6px; overflow: hidden; }
+.loading-bar-track-sm { height: 6px; margin: 6px 0; }
+.loading-bar-fill { height: 100%; background: linear-gradient(90deg, #22D3B8, #14B8A6); border-radius: 6px; transition: width .3s; }
+.loading-barge-list { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.08); }
+.loading-barge-row { padding: 12px 14px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+.loading-barge-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.loading-barge-updated { margin-left: auto; font-size: 10.5px; color: #8A97A8; }
+.loading-barge-meta { display: flex; justify-content: space-between; font-size: 11px; color: #B7C0CC; font-family: 'JetBrains Mono', monospace; margin-top: 4px; }
+.loading-status-badge { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+.loading-status-active { background: rgba(251,191,36,.18); color: #FBBF24; }
+.loading-status-done { background: rgba(74,222,128,.18); color: #4ADE80; }
+
+@media (max-width: 640px) {
+  .loading-overall-numbers { flex-wrap: wrap; }
+  .loading-overall-pct { margin-left: 0; }
+  .loading-barge-meta { flex-direction: column; gap: 2px; }
+}
 .review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 8px; }
 
 @media (max-width: 768px) {
