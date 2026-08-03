@@ -3723,12 +3723,46 @@ export default function IntegraDashboard() {
           else if (name.includes("imn-4")) { source = "production"; forced = "IMN-4"; }
           else if (name.includes("production")) { source = "production"; }
           const rows = parseDomeCSV(evt.target.result, source, forced);
-          const ids = new Set(rows.map((r) => r.id));
-          merged = merged.filter((d) => !ids.has(d.id)).concat(rows);
+          // The imported "stock" figure is treated as INITIAL/gross stock, not current
+          // remaining — same rule as manual chat-based stock updates. Net out whatever
+          // has already been consumed by FINALIZED barges, clamping to 0 (and bumping
+          // initialStock by the deficit) rather than silently resetting stock to the raw
+          // imported figure, which would have erased that consumption bookkeeping.
+          const adjustedRows = rows.map((r) => {
+            const used = barges
+              .filter((b) => b.finalized)
+              .reduce((sum, b) => sum + (b.sources || []).filter((s) => s.id === r.id).reduce((s, x) => s + x.amt, 0), 0);
+            if (used <= 0) return { ...r, initialStock: r.stock };
+            if (used > r.stock) return { ...r, initialStock: r.stock + (used - r.stock), stock: 0 };
+            return { ...r, initialStock: r.stock, stock: r.stock - used };
+          });
+          const ids = new Set(adjustedRows.map((r) => r.id));
+          merged = merged.filter((d) => !ids.has(d.id)).concat(adjustedRows);
         } catch (err) { console.error(err); }
         processed++;
         if (processed === files.length) {
-          setDomes(withInitialStock(merged));
+          setDomes(merged);
+          // Standing rule: barge source grades must be re-synced whenever dome stock/lab
+          // data is updated from Excel — a barge's stored source grade is a SNAPSHOT
+          // taken when it was built, not a live link, so it goes stale the moment the
+          // underlying dome's Ni% changes. This was previously only ever done as a
+          // one-off manual reconciliation; doing it automatically here is what makes the
+          // in-app Import button actually safe to use directly instead of going through
+          // chat for every stock update.
+          const mergedById = {}; merged.forEach((d) => { mergedById[d.id] = d; });
+          setBarges((prevBarges) => prevBarges.map((b) => {
+            let changed = false;
+            const newSources = b.sources.map((s) => {
+              const d = mergedById[s.id];
+              if (d && Math.abs((d.ni || 0) - s.grade) > 1e-9) { changed = true; return { ...s, grade: d.ni }; }
+              return s;
+            });
+            if (!changed) return b;
+            const totalWMT = newSources.reduce((sum, s) => sum + s.amt, 0);
+            const niSum = newSources.reduce((sum, s) => sum + s.amt * (s.grade / 100), 0);
+            const grade = totalWMT > 0 ? (niSum / totalWMT) * 100 : 0;
+            return { ...b, sources: newSources, totalWMT, grade, status: statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance) };
+          }));
           setImportStatus(`✓ Imported ${merged.length} domes`);
           setTimeout(() => { setShowImport(false); setImportStatus(""); }, 1500);
         }
