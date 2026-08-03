@@ -3148,13 +3148,26 @@ export default function IntegraDashboard() {
     };
   };
 
+  // Vercel's own crash page (function throws before reaching our try/catch — e.g. a
+  // missing npm package) returns HTML/plain-text, not JSON, so response.json() alone
+  // would just silently fail and hide the real cause behind a bare "HTTP 500". Read the
+  // raw text first and fall back to a trimmed snippet of it, which usually contains the
+  // actual crash reason (e.g. "Cannot find module 'googleapis'").
+  const extractErrorDetail = async (response) => {
+    const raw = await response.text();
+    try {
+      const body = JSON.parse(raw);
+      return body.details || body.error || `HTTP ${response.status}`;
+    } catch (e) {
+      const snippet = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+      return snippet ? `HTTP ${response.status} — ${snippet}` : `HTTP ${response.status} (no response body)`;
+    }
+  };
+
   const fetchDomesFromSheets = async () => {
     try {
       const response = await fetch("/api/sheets-read?sheetName=Domes");
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.details || body.error || `HTTP ${response.status}`);
-      }
+      if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("Domes tab returned 0 rows — check the tab name and that it has data below the header row."); return null; }
       const transformed = data.map(mapDomeFromSheetRow);
@@ -3170,10 +3183,7 @@ export default function IntegraDashboard() {
   const fetchBargesFromSheets = async (freshDomes) => {
     try {
       const response = await fetch("/api/sheets-read?sheetName=Barges");
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.details || body.error || `HTTP ${response.status}`);
-      }
+      if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("Barges tab returned 0 rows — check the tab name and that it has data below the header row."); return null; }
       const transformed = data.map((row) => mapBargeFromSheetRow(row, freshDomes || domes));
