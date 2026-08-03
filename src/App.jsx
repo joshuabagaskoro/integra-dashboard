@@ -1917,20 +1917,25 @@ function TimelineTab({ barges, settings, isDevAccount }) {
  * rules are needed later; flat-rate is intentionally the simple first pass.
  * ============================================================ */
 function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory, setExchangeRateHistory,
-  getHpmOnDate, getExchangeRateOnDate, calculateRoyalty, getHpmTrendPercent, getExRateTrendPercent, exportFinancialData }) {
+  getHpmOnDate, getExchangeRateOnDate, calculateRoyalty, getHpmTrendPercent, getExRateTrendPercent, exportFinancialData,
+  onHpmUpdated, onExchangeRateUpdated }) {
 
   const updateHpm = () => {
     const newPrice = prompt("Enter new HPM price (USD/WMT):", hpmHistory[0]?.price);
     if (newPrice && !isNaN(parseFloat(newPrice))) {
       const today = new Date().toISOString().split("T")[0];
-      setHpmHistory((prev) => [{ date: today, price: parseFloat(newPrice), unit: "USD/WMT" }, ...prev].slice(0, 180));
+      const updated = [{ date: today, price: parseFloat(newPrice), unit: "USD/WMT" }, ...hpmHistory].slice(0, 180);
+      setHpmHistory(updated);
+      onHpmUpdated?.(updated);
     }
   };
   const updateRate = () => {
     const newRate = prompt("Enter new exchange rate (IDR/USD):", exchangeRateHistory[0]?.rate);
     if (newRate && !isNaN(parseInt(newRate))) {
       const today = new Date().toISOString().split("T")[0];
-      setExchangeRateHistory((prev) => [{ date: today, rate: parseInt(newRate), source: "Manual" }, ...prev].slice(0, 180));
+      const updated = [{ date: today, rate: parseInt(newRate), source: "Manual" }, ...exchangeRateHistory].slice(0, 180);
+      setExchangeRateHistory(updated);
+      onExchangeRateUpdated?.(updated);
     }
   };
 
@@ -3244,7 +3249,9 @@ export default function IntegraDashboard() {
       }
       const data = await res.json();
       if (!data.rate) throw new Error("Response missing rate field");
-      setExchangeRateHistory((prev) => [{ date: data.date, rate: data.rate, source: data.source }, ...prev].slice(0, 180));
+      const updated = [{ date: data.date, rate: data.rate, source: data.source }, ...exchangeRateHistory].slice(0, 180);
+      setExchangeRateHistory(updated);
+      writeExchangeRateToSheets(updated); // so the whole team sees the auto-fetched rate too, not just this browser
       localStorage.setItem("lastExRateFetch", today);
       setExRateFetchStatus(`✅ Auto-fetched ${data.date}`);
     } catch (e) {
@@ -3451,6 +3458,48 @@ export default function IntegraDashboard() {
     }
   };
 
+  const fetchHpmFromSheets = async () => {
+    try {
+      // The Sheet tab is still named "HMAHistory" from before the dashboard renamed
+      // HMA to HPM internally — targeting that exact tab name rather than asking for
+      // the Sheet to be renamed.
+      const response = await fetch("/api/sheets-read?sheetName=HMAHistory");
+      if (!response.ok) throw new Error(await extractErrorDetail(response));
+      const { data } = await response.json();
+      if (!data.length) { setLastSyncError("HMAHistory tab returned 0 rows."); return null; }
+      const transformed = data
+        .map((row) => ({ date: row["Date"], price: cleanNum(row["Price (USD/WMT)"]), unit: "USD/WMT" }))
+        .filter((h) => h.date)
+        .sort((a, b) => new Date(b.date) - new Date(a.date));
+      setHpmHistory(transformed);
+      return transformed;
+    } catch (error) {
+      console.error("Error fetching HPM history from Sheets:", error);
+      setLastSyncError(`HPM: ${error.message}`);
+      return null;
+    }
+  };
+
+  const fetchExchangeRateFromSheets = async () => {
+    try {
+      const response = await fetch("/api/sheets-read?sheetName=ExchangeRates");
+      if (!response.ok) throw new Error(await extractErrorDetail(response));
+      const { data } = await response.json();
+      if (!data.length) { setLastSyncError("ExchangeRates tab returned 0 rows."); return null; }
+      const transformed = data
+        .map((row) => ({ date: row["Date"], rate: cleanNum(row["Rate (IDR/USD)"]), source: row["Source"] || "manual" }))
+        .filter((e) => e.date)
+        .sort((a, b) => new Date(b.date) - new Date(a.date));
+      setExchangeRateHistory(transformed);
+      return transformed;
+    } catch (error) {
+      console.error("Error fetching exchange rate history from Sheets:", error);
+      setLastSyncError(`Exchange Rate: ${error.message}`);
+      return null;
+    }
+  };
+
+
   const writeToSheets = async (sheetName, rows) => {
     try {
       const response = await fetch("/api/sheets-write", {
@@ -3490,6 +3539,16 @@ export default function IntegraDashboard() {
     );
     return writeToSheets("Barges", rows);
   };
+  const writeHpmToSheets = (hpmOverride) => {
+    const list = hpmOverride || hpmHistory;
+    const rows = toRows(["Date", "Price (USD/WMT)"], [...list].sort((a, b) => new Date(b.date) - new Date(a.date)).map((h) => [h.date, h.price.toFixed(2)]));
+    return writeToSheets("HMAHistory", rows);
+  };
+  const writeExchangeRateToSheets = (rateOverride) => {
+    const list = rateOverride || exchangeRateHistory;
+    const rows = toRows(["Date", "Rate (IDR/USD)", "Source"], [...list].sort((a, b) => new Date(b.date) - new Date(a.date)).map((e) => [e.date, e.rate, e.source || "manual"]));
+    return writeToSheets("ExchangeRates", rows);
+  };
 
 
   const syncWithSheets = async (force = false) => {
@@ -3503,8 +3562,10 @@ export default function IntegraDashboard() {
     setLastSyncError("");
     const freshDomes = await fetchDomesFromSheets();
     const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
+    const freshHpm = await fetchHpmFromSheets();
+    const freshExRate = await fetchExchangeRateFromSheets();
 
-    if (freshDomes && freshBarges) {
+    if (freshDomes && freshBarges && freshHpm && freshExRate) {
       setLastSyncTime(new Date());
       localStorage.setItem("lastSheetsSyncTime", new Date().toISOString());
       setSheetsSyncStatus("✅ Synced");
@@ -3865,6 +3926,7 @@ export default function IntegraDashboard() {
             getHpmOnDate={getHpmOnDate} getExchangeRateOnDate={getExchangeRateOnDate}
             calculateRoyalty={calculateRoyalty} getHpmTrendPercent={getHpmTrendPercent}
             getExRateTrendPercent={getExRateTrendPercent} exportFinancialData={exportFinancialData}
+            onHpmUpdated={writeHpmToSheets} onExchangeRateUpdated={writeExchangeRateToSheets}
           />
         )}
         {tab === "log" && isAdmin && <LoginLogTab loginHistory={loginHistory} />}
