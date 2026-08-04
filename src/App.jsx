@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
-  Layers, ChevronDown, RotateCcw, Gauge, Upload, X,
+  Layers, ChevronDown, Gauge, Upload, X,
   Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw, MessageSquare
 } from "lucide-react";
 import Papa from "papaparse";
@@ -1434,6 +1434,29 @@ function StockTab({ domes }) {
   }, [domes, search, contractorFilter, sourceFilter, sortKey, sortDir]);
 
   const totalStock = filtered.reduce((s, d) => s + d.stock, 0);
+
+  // Aggregate totals + weighted averages across whatever's currently filtered/checked —
+  // same "exclude unassayed (0% Ni) domes from the average" rule used elsewhere, so a
+  // pile of not-yet-tested domes doesn't drag the blended grade down artificially.
+  const filteredTotals = useMemo(() => {
+    let stockSum = 0, niSum = 0, niWeight = 0, feSum = 0, coSum = 0, sio2Sum = 0, mgoSum = 0, al2o3Sum = 0, simgSum = 0, simgWeight = 0;
+    filtered.forEach((d) => {
+      stockSum += d.stock;
+      feSum += d.stock * d.fe; coSum += d.stock * d.co; sio2Sum += d.stock * d.sio2; mgoSum += d.stock * d.mgo; al2o3Sum += d.stock * d.al2o3;
+      if (d.ni > 0) { niSum += d.stock * d.ni; niWeight += d.stock; }
+      if (d.simg > 0) { simgSum += d.stock * d.simg; simgWeight += d.stock; }
+    });
+    return {
+      stock: stockSum,
+      ni: niWeight > 0 ? niSum / niWeight : 0,
+      fe: stockSum > 0 ? feSum / stockSum : 0,
+      co: stockSum > 0 ? coSum / stockSum : 0,
+      sio2: stockSum > 0 ? sio2Sum / stockSum : 0,
+      mgo: stockSum > 0 ? mgoSum / stockSum : 0,
+      al2o3: stockSum > 0 ? al2o3Sum / stockSum : 0,
+      simg: simgWeight > 0 ? simgSum / simgWeight : 0,
+    };
+  }, [filtered]);
   
   // Contractor summary: split by source (inventory vs production)
   const { inventorySummary, productionSummary } = useMemo(() => {
@@ -1675,6 +1698,16 @@ function StockTab({ domes }) {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="table-totals-row">
+                <td colSpan={2}>Total ({filtered.length} domes)</td>
+                <td>—</td><td>—</td>
+                <td>{fmt(filteredTotals.stock)}</td>
+                <td>{fmt(filteredTotals.ni, 2)}</td><td>{fmt(filteredTotals.fe, 2)}</td><td>{fmt(filteredTotals.co, 3)}</td>
+                <td>{fmt(filteredTotals.sio2, 2)}</td><td>{fmt(filteredTotals.mgo, 2)}</td><td>{fmt(filteredTotals.al2o3, 2)}</td><td>{fmt(filteredTotals.simg, 2)}</td>
+                <td>—</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       </section>
@@ -1881,11 +1914,12 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
 
 function TimelineTab({ barges, settings, isDevAccount }) {
   const monthCounts = useMemo(() => {
-    const arr = MONTHS.map(() => ({ final: 0, draft: 0 }));
+    const arr = MONTHS.map(() => ({ final: 0, draft: 0, finalWMT: 0, draftWMT: 0 }));
     barges.forEach((b) => {
       const m = new Date(b.shipDate).getMonth();
       if (m < 0 || m > 11) return;
-      if (b.finalized) arr[m].final += 1; else arr[m].draft += 1;
+      if (b.finalized) { arr[m].final += 1; arr[m].finalWMT += b.totalWMT || 0; }
+      else { arr[m].draft += 1; arr[m].draftWMT += b.totalWMT || 0; }
     });
     return arr;
   }, [barges]);
@@ -1956,7 +1990,7 @@ function TimelineTab({ barges, settings, isDevAccount }) {
         <div className="panel-head"><TrendingUp size={16} /><span>Shipping schedule by month</span></div>
         <div className="month-chart">
           {monthCounts.map((m, i) => (
-            <div className="month-col" key={i}>
+            <div className="month-col" key={i} title={`${MONTHS[i]}: ${fmt(m.finalWMT + m.draftWMT)} WMT total (${fmt(m.finalWMT)} finalized, ${fmt(m.draftWMT)} draft)`}>
               <div className="month-bars">
                 <div className="month-bar month-bar-shipped" style={{ height: `${(m.final / maxCount) * 100}%` }} />
                 <div className="month-bar month-bar-other" style={{ height: `${(m.draft / maxCount) * 100}%` }} />
@@ -2174,61 +2208,6 @@ function LoginLogTab({ loginHistory }) {
  * SettingsTab — Data Export (admin only) and Account (everyone).
  * ============================================================ */
 /* ============================================================
- * FeatureToggleConfig — dev-only. Pick a user, toggle which tabs they see.
- * ============================================================ */
-function FeatureToggleConfig({ allUsers, allFeatureFlags, onSave }) {
-  const [localFlags, setLocalFlags] = useState(allFeatureFlags);
-  const [selectedUser, setSelectedUser] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-  const features = [["Stock", "Stock"], ["Barging", "Barging Plan"], ["Timeline", "Timeline"], ["Financials", "Financials"], ["LoginLog", "Login Log"], ["Settings", "Settings"], ["ChatAssistant", "Chat Assistant"]];
-
-  const isOn = (v) => v === "true" || v === true;
-  const userFlags = selectedUser ? (localFlags[selectedUser] || { Username: selectedUser }) : null;
-
-  const handleToggle = (feature) => {
-    setLocalFlags((prev) => ({
-      ...prev,
-      [selectedUser]: { ...(prev[selectedUser] || { Username: selectedUser }), [feature]: isOn((prev[selectedUser] || {})[feature]) ? "false" : "true" },
-    }));
-  };
-
-  const handleSave = async () => {
-    setIsSaving(true);
-    const success = await onSave(localFlags);
-    alert(success ? `✅ Feature flags saved for ${selectedUser}` : "❌ Failed to save feature flags");
-    setIsSaving(false);
-  };
-
-  return (
-    <div className="settings-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
-      <div className="card-content">
-        <h4>⚙️ Feature Configuration</h4>
-        <p>Choose which tabs each user can see. Applies the next time they log in, or on their next sync.</p>
-      </div>
-      <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} className="login-input" style={{ maxWidth: 280 }}>
-        <option value="">Select user…</option>
-        {allUsers.map((u) => <option key={u["Username"]} value={u["Username"]}>{u["Username"]} ({u["Role"]})</option>)}
-      </select>
-      {userFlags && (
-        <>
-          <div className="review-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
-            {features.map(([key, label]) => (
-              <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#B7C0CC", cursor: "pointer" }}>
-                <input type="checkbox" checked={isOn(userFlags[key])} onChange={() => handleToggle(key)} disabled={isSaving} style={{ accentColor: "#22D3B8", width: 16, height: 16 }} />
-                {label}
-              </label>
-            ))}
-          </div>
-          <button onClick={handleSave} disabled={isSaving} className="btn-settings-action btn-sync-sheets" style={{ alignSelf: "flex-start" }}>
-            {isSaving ? "Saving…" : "💾 Save Configuration"}
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
  * AccountManagement — dev-only. Create/disable/delete users.
  * ============================================================ */
 function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser }) {
@@ -2249,7 +2228,7 @@ function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser
   return (
     <div className="settings-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
       <div className="card-content" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-        <div style={{ minWidth: 0, flex: "1 1 200px" }}><h4>👥 Account Management</h4><p>Create, disable, or delete user accounts.</p></div>
+        <div style={{ minWidth: 0, flex: "1 1 200px" }}><h4>Account Management</h4><p>Create, disable, or delete user accounts.</p></div>
         <button onClick={() => setShowForm(!showForm)} className="btn-settings-action btn-sync-sheets" style={{ flexShrink: 0 }}>+ Add User</button>
       </div>
 
@@ -2331,7 +2310,7 @@ function SubFeatureConfiguration({ allUsers, allDetailedFlags, onSave }) {
 
   return (
     <div className="settings-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
-      <div className="card-content"><h4>🔧 Feature Configuration</h4><p>Select a user and tab to fine-tune individual sub-features.</p></div>
+      <div className="card-content"><h4>Feature Configuration</h4><p>Select a user and tab to fine-tune individual sub-features.</p></div>
 
       <div className="review-grid">
         <div className="form-group"><label>User</label>
@@ -2400,14 +2379,12 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
               <div className="card-content">
                 <h4>Status: {sheetsSyncStatus}</h4>
                 <p>
-                  {lastSyncTime ? `Last synced ${lastSyncTime.toLocaleString()}` : "Not synced yet this session"} — pulls Domes and
-                  Barges from your Google Sheet. Auto-syncs on login and every 30 min if the last sync is over an hour old.
-                  Finalizing/reopening a barge and Excel imports also push changes back to Sheets automatically.
+                  {lastSyncTime ? `Last synced ${lastSyncTime.toLocaleString()}` : "Not synced yet this session"} — pulls Domes, Barges,
+                  HPM, and Exchange Rates from your Google Sheet automatically for every logged-in user. Runs on login, every 5 minutes,
+                  and immediately whenever you switch back to this tab — no manual step needed. Finalizing/reopening a barge and Excel
+                  imports also push changes back to Sheets automatically.
                 </p>
               </div>
-              <button onClick={() => syncWithSheets(true)} className="btn-settings-action btn-sync-sheets">
-                <RefreshCw size={16} /> <span>Sync Now</span>
-              </button>
             </div>
             {lastSyncError && (
               <div className="sync-error-detail">
@@ -2435,7 +2412,7 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
         {currentUser?.username === "dev" && (
           <div className="settings-section dev-admin-section">
             <div className="settings-section-header">
-              <h3>🛠️ Developer Configuration</h3>
+              <h3>Developer Configuration</h3>
               <span className="section-badge dev-badge">Dev Only</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -2467,7 +2444,6 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                   alert(usersOk && flagsOk && detailedOk ? `✅ User ${username} deleted` : "❌ Failed to fully delete user");
                 }}
               />
-              <FeatureToggleConfig allUsers={allUsers} allFeatureFlags={allFeatureFlags} onSave={writeFeatureFlagsToSheets} />
               <SubFeatureConfiguration allUsers={allUsers} allDetailedFlags={allDetailedFlags} onSave={writeDetailedFeatureFlagsToSheets} />
             </div>
           </div>
@@ -3502,15 +3478,20 @@ export default function IntegraDashboard() {
     return () => clearInterval(interval);
   }, [isLoggedIn]);
 
-  // Phase 2B: pull fresh data from Google Sheets on login (admin only), hybrid — only
-  // actually fetches if the last sync was over an hour ago, unless forced via the
-  // "Sync Now" button. Also re-checks every 30 minutes while the tab stays open.
+  // Pull fresh data from Google Sheets on login (every user — this used to be
+  // admin-only, which meant operation accounts never saw anything an admin pushed;
+  // permanently stuck on stale/default data). Re-checks every 5 minutes while the tab
+  // stays open, and immediately whenever the tab becomes visible again (switching back
+  // from another app/tab) — there's no manual "Sync Now" button, so this is what keeps
+  // everyone actually looking at the same data instead of whatever loaded at login.
   useEffect(() => {
-    if (!isLoggedIn || !isAdmin) return;
+    if (!isLoggedIn) return;
     syncWithSheets(false);
-    const syncInterval = setInterval(() => syncWithSheets(false), 30 * 60 * 1000);
-    return () => clearInterval(syncInterval);
-  }, [isLoggedIn, isAdmin]);
+    const syncInterval = setInterval(() => syncWithSheets(false), 5 * 60 * 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") syncWithSheets(false); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(syncInterval); document.removeEventListener("visibilitychange", onVisible); };
+  }, [isLoggedIn]);
 
   const completeLogin = (username, role) => {
     const user = { username, role };
@@ -3541,6 +3522,7 @@ export default function IntegraDashboard() {
       setLoginHistory((prev) => {
         const updated = [entry, ...prev].slice(0, 100);
         try { localStorage.setItem("integraLoginHistory", JSON.stringify(updated)); } catch (e) {}
+        writeLoginHistoryToSheets(updated);
         return updated;
       });
     };
@@ -3673,7 +3655,6 @@ export default function IntegraDashboard() {
     URL.revokeObjectURL(url);
   };
 
-  const resetDefaults = () => { setDomes(withInitialStock(DEFAULT_DOMES)); setSettings(DEFAULT_SETTINGS); setBarges(DEFAULT_BARGES); };
 
   // ---- Google Sheets export suite (Settings tab, admin only) ----
   // One CSV per category, all downloaded together, meant to be imported into a Google
@@ -3919,7 +3900,7 @@ export default function IntegraDashboard() {
   };
   // Accept an explicit domes/barges array (used right after a state update, where the
   // component's own `domes`/`barges` closure would still be the stale pre-update
-  // value) — falls back to current state for the manual "Sync Now" case.
+  // value) — falls back to current state for the periodic auto-sync case.
   const writeDomesToSheets = (domesOverride) => {
     const list = domesOverride || domes;
     const rows = toRows(
@@ -4011,6 +3992,33 @@ export default function IntegraDashboard() {
       usersData.map((u) => [u["Username"], u["Password"], u["Role"], u["Status"], u["Created_Date"], u["Last_Modified"]])
     );
     return writeToSheets("Users", rows);
+  };
+
+  // Login history — previously only ever written to localStorage (per-browser, never
+  // shared) and exported as a one-off manual CSV. Nothing ever pushed it live to the
+  // LoginHistory Sheet tab, which is exactly why that tab stayed empty despite the
+  // dashboard itself showing plenty of entries. Every login attempt now writes here too.
+  const writeLoginHistoryToSheets = async (historyOverride) => {
+    const list = historyOverride || loginHistory;
+    const rows = toRows(["Timestamp", "Username", "Status"], list.map((l) => [l.timestamp, l.username, l.status]));
+    return writeToSheets("LoginHistory", rows);
+  };
+  const fetchLoginHistoryFromSheets = async () => {
+    try {
+      const response = await fetch("/api/sheets-read?sheetName=LoginHistory");
+      if (!response.ok) throw new Error(await extractErrorDetail(response));
+      const { data } = await response.json();
+      const transformed = data
+        .map((row) => ({ timestamp: row["Timestamp"], username: row["Username"], status: row["Status"] }))
+        .filter((l) => l.timestamp)
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        .slice(0, 200);
+      setLoginHistory(transformed);
+      return transformed;
+    } catch (error) {
+      console.error("Error fetching login history from Sheets:", error);
+      return null; // don't block the rest of sync on this — login log is a nice-to-have, not core data
+    }
   };
 
   // ---- Sub-feature (granular) flags — a finer layer on top of the tab-level flags
@@ -4112,11 +4120,10 @@ export default function IntegraDashboard() {
   };
 
   const syncWithSheets = async (force = false) => {
-    if (!isAdmin) return;
     const lastSyncStr = localStorage.getItem("lastSheetsSyncTime");
     const lastSync = lastSyncStr ? new Date(lastSyncStr) : null;
     const minutesSinceSync = lastSync ? (Date.now() - lastSync.getTime()) / 1000 / 60 : 999;
-    if (!force && minutesSinceSync < 60) return;
+    if (!force && minutesSinceSync < 5) return;
 
     setSheetsSyncStatus("Syncing…");
     setLastSyncError("");
@@ -4124,6 +4131,19 @@ export default function IntegraDashboard() {
     const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
     const freshHpm = await fetchHpmFromSheets();
     const freshExRate = await fetchExchangeRateFromSheets();
+    // Feature flags aren't just loaded at login anymore — if dev changes what someone
+    // can see mid-session, this is what actually gets it to them without forcing a
+    // logout/login. Best-effort: doesn't affect the overall sync status below, since a
+    // feature-flag hiccup shouldn't be reported as "sync failed" for stock/barge data.
+    if (currentUser?.username) {
+      loadUserFeaturesFromSheets(currentUser.username);
+      loadUserDetailedFeatures(currentUser.username);
+    }
+    if (isAdmin) {
+      fetchLoginHistoryFromSheets();
+      loadAllUsersAndFlags();
+      loadAllDetailedFlags();
+    }
 
     if (freshDomes && freshBarges && freshHpm && freshExRate) {
       setLastSyncTime(new Date());
@@ -4140,7 +4160,6 @@ export default function IntegraDashboard() {
   // lets React finish committing the state update first, so the write reads fresh data
   // rather than a stale pre-update snapshot.
   const onDataCommitted = () => {
-    if (!isAdmin) return;
     setTimeout(() => { writeDomesToSheets(); writeBargesToSheets(); }, 500);
   };
 
@@ -4224,7 +4243,7 @@ export default function IntegraDashboard() {
     }
     setDomes(updatedDomes);
     setBarges(updatedBarges);
-    if (isAdmin) { writeDomesToSheets(updatedDomes); writeBargesToSheets(updatedBarges); }
+    writeDomesToSheets(updatedDomes); writeBargesToSheets(updatedBarges);
     setPendingFinalize(null);
   };
 
@@ -4500,7 +4519,6 @@ export default function IntegraDashboard() {
             {(userFeatures.settings || currentUser?.username === "dev") && <NavButton icon={Settings} label="Settings" active={tab === "settings"} onClick={() => setTab("settings")} />}
           </nav>
           <button className="btn-import" onClick={() => setShowImport(!showImport)}><Upload size={14} /> Import</button>
-          <button className="btn-ghost" onClick={resetDefaults}><RotateCcw size={13} /></button>
           <button className="btn-logout" onClick={handleLogout} title={`Log out (${currentUser?.username})`}>
             <LogOut size={13} /> <span className="btn-logout-label">Logout</span>
           </button>
@@ -4888,6 +4906,8 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .table-wrap-tall { max-height: 520px; overflow-y: auto; }
 .table-meta { font-size: 11px; color: #667080; margin-bottom: 8px; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table-totals-row { font-weight: 700; color: #22D3B8; background: rgba(34,211,184,.06); border-top: 2px solid rgba(34,211,184,.25); }
+.table-totals-row td { padding: 10px 8px; }
 .data-table th { position: sticky; top: 0; background: #0B1119; text-align: left; padding: 8px 10px; font-size: 10.5px; color: #8A97A8;
   text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid rgba(255,255,255,.1); white-space: nowrap; }
 .data-table th.sortable { cursor: pointer; user-select: none; }
