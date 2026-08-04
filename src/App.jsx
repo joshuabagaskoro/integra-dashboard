@@ -992,7 +992,7 @@ function NavButton({ icon: Icon, label, active, onClick, mobile }) {
  * replacing the old bottom icon bar (which got cramped once Financials/Log/Settings
  * were added on top of the original 4 tabs). Closes on selection or on outside click,
  * same interaction pattern as MultiSelectDropdown/SearchableDomeSelect elsewhere. */
-function MobileNavMenu({ tab, setTab, isAdmin, currentUser, handleLogout }) {
+function MobileNavMenu({ tab, setTab, isAdmin, currentUser, handleLogout, userFeatures }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -1004,12 +1004,12 @@ function MobileNavMenu({ tab, setTab, isAdmin, currentUser, handleLogout }) {
 
   const items = [
     { key: "overview", label: "Overview", icon: LayoutGrid },
-    { key: "stock", label: "Stock", icon: Layers },
-    { key: "plan", label: "Barging Plan", icon: Ship },
-    { key: "timeline", label: "Timeline", icon: Calendar },
-    ...(isAdmin ? [{ key: "financials", label: "Financials", icon: DollarSign }] : []),
-    ...(isAdmin ? [{ key: "log", label: "Login Log", icon: History }] : []),
-    { key: "settings", label: "Settings", icon: Settings },
+    ...(userFeatures.stock ? [{ key: "stock", label: "Stock", icon: Layers }] : []),
+    ...(userFeatures.barging ? [{ key: "plan", label: "Barging Plan", icon: Ship }] : []),
+    ...(userFeatures.timeline ? [{ key: "timeline", label: "Timeline", icon: Calendar }] : []),
+    ...(isAdmin && userFeatures.financials ? [{ key: "financials", label: "Financials", icon: DollarSign }] : []),
+    ...(isAdmin && userFeatures.loginLog ? [{ key: "log", label: "Login Log", icon: History }] : []),
+    ...(userFeatures.settings || currentUser?.username === "dev" ? [{ key: "settings", label: "Settings", icon: Settings }] : []),
   ];
 
   const go = (key) => { setTab(key); setOpen(false); };
@@ -2084,7 +2084,130 @@ function LoginLogTab({ loginHistory }) {
 /* ============================================================
  * SettingsTab — Data Export (admin only) and Account (everyone).
  * ============================================================ */
-function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus }) {
+/* ============================================================
+ * FeatureToggleConfig — dev-only. Pick a user, toggle which tabs they see.
+ * ============================================================ */
+function FeatureToggleConfig({ allUsers, allFeatureFlags, onSave }) {
+  const [localFlags, setLocalFlags] = useState(allFeatureFlags);
+  const [selectedUser, setSelectedUser] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const features = [["Stock", "Stock"], ["Barging", "Barging Plan"], ["Timeline", "Timeline"], ["Financials", "Financials"], ["LoginLog", "Login Log"], ["Settings", "Settings"], ["ChatAssistant", "Chat Assistant"]];
+
+  const isOn = (v) => v === "true" || v === true;
+  const userFlags = selectedUser ? (localFlags[selectedUser] || { Username: selectedUser }) : null;
+
+  const handleToggle = (feature) => {
+    setLocalFlags((prev) => ({
+      ...prev,
+      [selectedUser]: { ...(prev[selectedUser] || { Username: selectedUser }), [feature]: isOn((prev[selectedUser] || {})[feature]) ? "false" : "true" },
+    }));
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    const success = await onSave(localFlags);
+    alert(success ? `✅ Feature flags saved for ${selectedUser}` : "❌ Failed to save feature flags");
+    setIsSaving(false);
+  };
+
+  return (
+    <div className="settings-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
+      <div className="card-content">
+        <h4>⚙️ Feature Configuration</h4>
+        <p>Choose which tabs each user can see. Applies the next time they log in, or on their next sync.</p>
+      </div>
+      <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} className="login-input" style={{ maxWidth: 280 }}>
+        <option value="">Select user…</option>
+        {allUsers.map((u) => <option key={u["Username"]} value={u["Username"]}>{u["Username"]} ({u["Role"]})</option>)}
+      </select>
+      {userFlags && (
+        <>
+          <div className="review-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
+            {features.map(([key, label]) => (
+              <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#B7C0CC", cursor: "pointer" }}>
+                <input type="checkbox" checked={isOn(userFlags[key])} onChange={() => handleToggle(key)} disabled={isSaving} style={{ accentColor: "#22D3B8", width: 16, height: 16 }} />
+                {label}
+              </label>
+            ))}
+          </div>
+          <button onClick={handleSave} disabled={isSaving} className="btn-settings-action btn-sync-sheets" style={{ alignSelf: "flex-start" }}>
+            {isSaving ? "Saving…" : "💾 Save Configuration"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+ * AccountManagement — dev-only. Create/disable/delete users.
+ * ============================================================ */
+function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser }) {
+  const [showForm, setShowForm] = useState(false);
+  const [newUser, setNewUser] = useState({ username: "", password: "", role: "operation" });
+
+  const handleCreate = async () => {
+    if (!newUser.username || !newUser.password) { alert("⚠️ Username and password required"); return; }
+    if (allUsers.some((u) => u["Username"] === newUser.username)) { alert("❌ Username already exists"); return; }
+    const today = new Date().toISOString().split("T")[0];
+    const success = await onCreateUser({
+      Username: newUser.username, Password: newUser.password, Role: newUser.role,
+      Status: "active", Created_Date: today, Last_Modified: today,
+    });
+    if (success) { alert(`✅ User ${newUser.username} created`); setNewUser({ username: "", password: "", role: "operation" }); setShowForm(false); }
+  };
+
+  return (
+    <div className="settings-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
+      <div className="card-content" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ minWidth: 0, flex: "1 1 200px" }}><h4>👥 Account Management</h4><p>Create, disable, or delete user accounts.</p></div>
+        <button onClick={() => setShowForm(!showForm)} className="btn-settings-action btn-sync-sheets" style={{ flexShrink: 0 }}>+ Add User</button>
+      </div>
+
+      {showForm && (
+        <div className="review-grid">
+          <div className="form-group"><label>Username</label>
+            <input className="login-input" value={newUser.username} onChange={(e) => setNewUser((p) => ({ ...p, username: e.target.value }))} /></div>
+          <div className="form-group"><label>Password</label>
+            <input type="password" className="login-input" value={newUser.password} onChange={(e) => setNewUser((p) => ({ ...p, password: e.target.value }))} /></div>
+          <div className="form-group"><label>Role</label>
+            <select className="login-input" value={newUser.role} onChange={(e) => setNewUser((p) => ({ ...p, role: e.target.value }))}>
+              <option value="operation">Operation</option>
+              <option value="admin">Admin</option>
+            </select></div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={handleCreate} className="btn-settings-action btn-sync-sheets" style={{ flex: "1 1 100px" }}>Create</button>
+            <button onClick={() => setShowForm(false)} className="btn-ghost" style={{ flex: "1 1 100px" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {allUsers.length === 0 && <p className="note" style={{ margin: 0 }}>No users loaded yet.</p>}
+        {allUsers.map((u) => (
+          <div key={u["Username"]} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 12, background: "rgba(0,0,0,.2)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 8, opacity: u["Status"] === "disabled" ? 0.6 : 1, flexWrap: "wrap", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <strong style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12 }}>{u["Username"]}</strong>
+              <span className="loading-status-badge loading-status-active">{u["Role"]}</span>
+              <span style={{ fontSize: 10, fontWeight: 600, color: u["Status"] === "active" ? "#4ADE80" : "#F87171" }}>
+                {u["Status"] === "active" ? "🟢 Active" : "🔴 Disabled"}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => onDisableUser(u["Username"], u["Status"] === "active" ? "disabled" : "active")} className="btn-settings-action btn-sync-sheets" style={{ padding: "6px 10px", fontSize: 10 }}>
+                {u["Status"] === "active" ? "⛔ Disable" : "✅ Enable"}
+              </button>
+              <button onClick={() => { if (confirm(`⚠️ Permanently delete user "${u["Username"]}"? This cannot be undone.`)) onDeleteUser(u["Username"]); }}
+                className="btn-settings-action btn-logout-action" style={{ padding: "6px 10px", fontSize: 10 }}>🗑️ Delete</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus, allUsers, allFeatureFlags, setAllUsers, setAllFeatureFlags, writeUsersToSheets, writeFeatureFlagsToSheets }) {
   return (
     <div className="stack">
       <section className="glass panel" style={{ padding: 0 }}>
@@ -2131,6 +2254,42 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                 <h4>{exRateFetchStatus}</h4>
                 <p>Checks once/day (recheck runs hourly, only fetches if today's date hasn't been fetched yet) via a free public API. Manual "Update Rate" on the Financials tab always works regardless of this.</p>
               </div>
+            </div>
+          </div>
+        )}
+
+        {currentUser?.username === "dev" && (
+          <div className="settings-section dev-admin-section">
+            <div className="settings-section-header">
+              <h3>🛠️ Developer Configuration</h3>
+              <span className="section-badge dev-badge">Dev Only</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <AccountManagement
+                allUsers={allUsers}
+                onCreateUser={async (user) => {
+                  const updated = [...allUsers, user];
+                  setAllUsers(updated);
+                  return await writeUsersToSheets(updated);
+                }}
+                onDisableUser={async (username, status) => {
+                  const updated = allUsers.map((u) => u["Username"] === username ? { ...u, Status: status, Last_Modified: new Date().toISOString().split("T")[0] } : u);
+                  setAllUsers(updated);
+                  const ok = await writeUsersToSheets(updated);
+                  alert(ok ? `✅ User ${username} ${status}` : "❌ Failed to update user");
+                }}
+                onDeleteUser={async (username) => {
+                  const updatedUsers = allUsers.filter((u) => u["Username"] !== username);
+                  setAllUsers(updatedUsers);
+                  const updatedFlags = { ...allFeatureFlags };
+                  delete updatedFlags[username];
+                  setAllFeatureFlags(updatedFlags);
+                  const usersOk = await writeUsersToSheets(updatedUsers);
+                  const flagsOk = await writeFeatureFlagsToSheets(updatedFlags);
+                  alert(usersOk && flagsOk ? `✅ User ${username} deleted` : "❌ Failed to fully delete user");
+                }}
+              />
+              <FeatureToggleConfig allUsers={allUsers} allFeatureFlags={allFeatureFlags} onSave={writeFeatureFlagsToSheets} />
             </div>
           </div>
         )}
@@ -3068,6 +3227,17 @@ export default function IntegraDashboard() {
   const [sheetsSyncStatus, setSheetsSyncStatus] = useState("Ready");
   const [lastSyncError, setLastSyncError] = useState("");
   const [exRateFetchStatus, setExRateFetchStatus] = useState("Not checked yet this session");
+
+  // Feature flags & account management — configuration UI is dev-only, but the
+  // resulting tab visibility applies to whoever is logged in (that's the actual
+  // feature being tested). Defaults to everything visible — fail-open, not fail-closed
+  // — so if the FeatureFlags sheet is unreachable or a user has no row in it yet,
+  // nobody gets silently locked out of tabs they should have access to.
+  const [userFeatures, setUserFeatures] = useState({
+    stock: true, barging: true, timeline: true, financials: true, loginLog: true, settings: true, chatAssistant: true,
+  });
+  const [allUsers, setAllUsers] = useState([]);
+  const [allFeatureFlags, setAllFeatureFlags] = useState({});
   const [exchangeRateHistory, setExchangeRateHistory] = useState(DEFAULT_EXCHANGE_RATE_HISTORY);
 
   const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
@@ -3159,9 +3329,29 @@ export default function IntegraDashboard() {
     return () => clearInterval(syncInterval);
   }, [isLoggedIn, isAdmin]);
 
-  const handleLogin = (username, password) => {
+  const completeLogin = (username, role) => {
+    const user = { username, role };
+    const session = { user, loginTime: Date.now() };
+    try { sessionStorage.setItem("integraSession", JSON.stringify(session)); } catch (e) {}
+    setCurrentUser(user);
+    setIsLoggedIn(true);
+    setShowWelcome(true);
+    loadUserFeaturesFromSheets(username);
+    if (username === "dev") loadAllUsersAndFlags();
+    setTimeout(() => setShowWelcome(false), 3000);
+  };
+
+  // Hybrid login: the 3 core accounts (dev/integra/operation) authenticate instantly
+  // against the hardcoded CREDENTIALS object, no network call at all — this is
+  // deliberate. Making login itself depend on a live Sheets fetch would turn the
+  // Sheets API into a single point of failure for getting into the app at all, and
+  // we've hit real Sheets outages multiple times already this project (missing
+  // package, malformed key, header mismatches). Only usernames NOT in the hardcoded
+  // set fall through to a Sheets lookup — that's how accounts created via the dev
+  // Account Management UI get to log in, without weakening the reliability of the
+  // three accounts everyone actually depends on day to day.
+  const handleLogin = async (username, password) => {
     setLoginError("");
-    const cred = CREDENTIALS[username];
     const logAttempt = (status) => {
       const entry = { timestamp: new Date().toISOString(), username: username || "(unknown)", status };
       setLoginHistory((prev) => {
@@ -3171,20 +3361,39 @@ export default function IntegraDashboard() {
       });
     };
 
-    if (!cred || cred.password !== password) {
-      logAttempt("Failed");
-      setLoginError("❌ Invalid username or password. Please try again.");
+    const cred = CREDENTIALS[username];
+    if (cred) {
+      if (cred.password !== password) {
+        logAttempt("Failed");
+        setLoginError("❌ Invalid username or password. Please try again.");
+        return;
+      }
+      completeLogin(username, cred.role);
+      logAttempt("Successful");
       return;
     }
 
-    const user = { username, role: cred.role };
-    const session = { user, loginTime: Date.now() };
-    try { sessionStorage.setItem("integraSession", JSON.stringify(session)); } catch (e) {}
-    setCurrentUser(user);
-    setIsLoggedIn(true);
-    setShowWelcome(true);
-    logAttempt("Successful");
-    setTimeout(() => setShowWelcome(false), 3000);
+    try {
+      const response = await fetch("/api/sheets-read?sheetName=Users");
+      if (!response.ok) { logAttempt("Failed"); setLoginError("❌ Invalid username or password."); return; }
+      const { data } = await response.json();
+      const user = data.find((u) => u["Username"] === username);
+      if (!user || user["Password"] !== password) {
+        logAttempt("Failed");
+        setLoginError("❌ Invalid username or password. Please try again.");
+        return;
+      }
+      if (user["Status"] === "disabled") {
+        logAttempt("Failed");
+        setLoginError("❌ This account is disabled.");
+        return;
+      }
+      completeLogin(username, user["Role"]);
+      logAttempt("Successful");
+    } catch (error) {
+      logAttempt("Failed");
+      setLoginError("❌ Invalid username or password.");
+    }
   };
 
   const handleLogout = () => {
@@ -3243,10 +3452,7 @@ export default function IntegraDashboard() {
       const today = new Date().toISOString().split("T")[0];
       if (localStorage.getItem("lastExRateFetch") === today) return;
       const res = await fetch("/api/fetch-exchange-rate");
-      if (!res.ok) {
-        const raw = await res.text();
-        throw new Error(raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 150) || `HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(await extractErrorDetail(res));
       const data = await res.json();
       if (!data.rate) throw new Error("Response missing rate field");
       const updated = [{ date: data.date, rate: data.rate, source: data.source }, ...exchangeRateHistory].slice(0, 180);
@@ -3416,12 +3622,18 @@ export default function IntegraDashboard() {
   // raw text first and fall back to a trimmed snippet of it, which usually contains the
   // actual crash reason (e.g. "Cannot find module 'googleapis'").
   const extractErrorDetail = async (response) => {
+    if (response.status === 404) return "HTTP 404 — endpoint not found. Check that this API file was actually committed and deployed.";
     const raw = await response.text();
     try {
       const body = JSON.parse(raw);
       return body.details || body.error || `HTTP ${response.status}`;
     } catch (e) {
-      const snippet = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+      // Vercel's crash/error pages are HTML and often include a <style> block — plain
+      // tag-stripping alone leaves that block's raw CSS text behind as unreadable
+      // noise (exactly what showed up in the UI before this fix). Strip style/script
+      // blocks by their full content, not just their tags, before the generic strip.
+      const cleaned = raw.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ");
+      const snippet = cleaned.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
       return snippet ? `HTTP ${response.status} — ${snippet}` : `HTTP ${response.status} (no response body)`;
     }
   };
@@ -3555,6 +3767,66 @@ export default function IntegraDashboard() {
     const list = rateOverride || exchangeRateHistory;
     const rows = toRows(["Date", "Rate (IDR/USD)", "Source"], [...list].sort((a, b) => new Date(b.date) - new Date(a.date)).map((e) => [e.date, e.rate, e.source || "manual"]));
     return writeToSheets("ExchangeRates", rows);
+  };
+
+  // ---- Feature flags & account management (dev-only configuration, applies to
+  // whoever is actually logged in — see the state comment above for why the default
+  // is fail-open). ----
+  const loadUserFeaturesFromSheets = async (username) => {
+    try {
+      const response = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      if (!response.ok) return; // keep the fail-open defaults
+      const { data } = await response.json();
+      const userConfig = data.find((row) => row["Username"] === username);
+      if (!userConfig) return; // no row for this user yet — keep fail-open defaults
+      setUserFeatures({
+        stock: userConfig["Stock"] === "true" || userConfig["Stock"] === true,
+        barging: userConfig["Barging"] === "true" || userConfig["Barging"] === true,
+        timeline: userConfig["Timeline"] === "true" || userConfig["Timeline"] === true,
+        financials: userConfig["Financials"] === "true" || userConfig["Financials"] === true,
+        loginLog: userConfig["LoginLog"] === "true" || userConfig["LoginLog"] === true,
+        settings: userConfig["Settings"] === "true" || userConfig["Settings"] === true,
+        chatAssistant: userConfig["ChatAssistant"] === "true" || userConfig["ChatAssistant"] === true,
+      });
+    } catch (error) {
+      console.error("Error loading user features:", error);
+    }
+  };
+
+  const loadAllUsersAndFlags = async () => {
+    try {
+      const usersRes = await fetch("/api/sheets-read?sheetName=Users");
+      if (usersRes.ok) { const { data } = await usersRes.json(); setAllUsers(data); }
+      const flagsRes = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      if (flagsRes.ok) {
+        const { data } = await flagsRes.json();
+        const flagsObj = {};
+        data.forEach((row) => { flagsObj[row["Username"]] = row; });
+        setAllFeatureFlags(flagsObj);
+      }
+    } catch (error) {
+      console.error("Error loading users/flags:", error);
+    }
+  };
+
+  const writeFeatureFlagsToSheets = async (flagsData) => {
+    const boolStr = (v) => (v === true || v === "true" ? "true" : "false");
+    const rows = toRows(
+      ["Username", "Stock", "Barging", "Timeline", "Financials", "LoginLog", "Settings", "ChatAssistant"],
+      Object.entries(flagsData).map(([username, flags]) => [
+        username, boolStr(flags["Stock"]), boolStr(flags["Barging"]), boolStr(flags["Timeline"]),
+        boolStr(flags["Financials"]), boolStr(flags["LoginLog"]), boolStr(flags["Settings"]), boolStr(flags["ChatAssistant"]),
+      ])
+    );
+    return writeToSheets("FeatureFlags", rows);
+  };
+
+  const writeUsersToSheets = async (usersData) => {
+    const rows = toRows(
+      ["Username", "Password", "Role", "Status", "Created_Date", "Last_Modified"],
+      usersData.map((u) => [u["Username"], u["Password"], u["Role"], u["Status"], u["Created_Date"], u["Last_Modified"]])
+    );
+    return writeToSheets("Users", rows);
   };
 
 
@@ -3810,7 +4082,7 @@ export default function IntegraDashboard() {
         <div className="test-badge">🧪 TEST ACCOUNT</div>
       )}
 
-      {isDevAccount && (
+      {isDevAccount && userFeatures.chatAssistant && (
         <button className="loading-assistant-btn" onClick={() => setShowLoadingReportModal(true)} title="Parse shipment loading report">
           <MessageSquare size={20} />
           <span>Chat</span>
@@ -3939,28 +4211,28 @@ export default function IntegraDashboard() {
         <div className="nav-desktop-wrapper">
           <nav className="nav-desktop">
             <NavButton icon={LayoutGrid} label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
-            <NavButton icon={Layers} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} />
-            <NavButton icon={Ship} label="Barging Plan" active={tab === "plan"} onClick={() => setTab("plan")} />
-            <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} />
-            {isAdmin && <NavButton icon={DollarSign} label="Financials" active={tab === "financials"} onClick={() => setTab("financials")} />}
-            {isAdmin && <NavButton icon={History} label="Login Log" active={tab === "log"} onClick={() => setTab("log")} />}
-            <NavButton icon={Settings} label="Settings" active={tab === "settings"} onClick={() => setTab("settings")} />
+            {userFeatures.stock && <NavButton icon={Layers} label="Stock" active={tab === "stock"} onClick={() => setTab("stock")} />}
+            {userFeatures.barging && <NavButton icon={Ship} label="Barging Plan" active={tab === "plan"} onClick={() => setTab("plan")} />}
+            {userFeatures.timeline && <NavButton icon={Calendar} label="Timeline" active={tab === "timeline"} onClick={() => setTab("timeline")} />}
+            {isAdmin && userFeatures.financials && <NavButton icon={DollarSign} label="Financials" active={tab === "financials"} onClick={() => setTab("financials")} />}
+            {isAdmin && userFeatures.loginLog && <NavButton icon={History} label="Login Log" active={tab === "log"} onClick={() => setTab("log")} />}
+            {(userFeatures.settings || currentUser?.username === "dev") && <NavButton icon={Settings} label="Settings" active={tab === "settings"} onClick={() => setTab("settings")} />}
           </nav>
           <button className="btn-import" onClick={() => setShowImport(!showImport)}><Upload size={14} /> Import</button>
           <button className="btn-ghost" onClick={resetDefaults}><RotateCcw size={13} /></button>
           <button className="btn-logout" onClick={handleLogout} title={`Log out (${currentUser?.username})`}>
             <LogOut size={13} /> <span className="btn-logout-label">Logout</span>
           </button>
-          <MobileNavMenu tab={tab} setTab={setTab} isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} />
+          <MobileNavMenu tab={tab} setTab={setTab} isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} userFeatures={userFeatures} />
         </div>
       </header>
 
       <main className="content">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
-        {tab === "stock" && <StockTab domes={domes} />}
-        {tab === "plan" && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} />}
-        {tab === "timeline" && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} />}
-        {tab === "financials" && isAdmin && (
+        {tab === "stock" && userFeatures.stock && <StockTab domes={domes} />}
+        {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} />}
+        {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} />}
+        {tab === "financials" && isAdmin && userFeatures.financials && (
           <FinancialsTab
             barges={barges} hpmHistory={hpmHistory} setHpmHistory={setHpmHistory}
             exchangeRateHistory={exchangeRateHistory} setExchangeRateHistory={setExchangeRateHistory}
@@ -3970,10 +4242,12 @@ export default function IntegraDashboard() {
             onHpmUpdated={writeHpmToSheets} onExchangeRateUpdated={writeExchangeRateToSheets}
           />
         )}
-        {tab === "log" && isAdmin && <LoginLogTab loginHistory={loginHistory} />}
-        {tab === "settings" && (
+        {tab === "log" && isAdmin && userFeatures.loginLog && <LoginLogTab loginHistory={loginHistory} />}
+        {tab === "settings" && (userFeatures.settings || currentUser?.username === "dev") && (
           <SettingsTab isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} exportAllForGoogleSheets={exportAllForGoogleSheets}
-            syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} lastSyncError={lastSyncError} exRateFetchStatus={exRateFetchStatus} />
+            syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} lastSyncError={lastSyncError} exRateFetchStatus={exRateFetchStatus}
+            allUsers={allUsers} allFeatureFlags={allFeatureFlags} setAllUsers={setAllUsers} setAllFeatureFlags={setAllFeatureFlags}
+            writeUsersToSheets={writeUsersToSheets} writeFeatureFlagsToSheets={writeFeatureFlagsToSheets} />
         )}
       </main>
     </div>
@@ -4279,7 +4553,7 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .kpi-warn { color: #FBBF24; }
 
 .panel { padding: 20px; }
-.panel-head { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; margin-bottom: 16px; color: #EAF0F6; }
+.panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 14px; margin-bottom: 16px; color: #EAF0F6; }
 .panel-head svg { color: #E35F0C; }
 .panel-head-collapsible { padding: 12px 16px; margin: 0; background: linear-gradient(135deg, rgba(227,95,12,.05), rgba(255,255,255,.01)); 
   border-radius: 12px; border-bottom: 1px solid rgba(227,95,12,.15); 
@@ -4832,7 +5106,7 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .financial-cards-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 .financial-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); border-radius: 16px;
   padding: 20px; display: flex; flex-direction: column; gap: 14px; }
-.card-header { display: flex; justify-content: space-between; align-items: flex-start; font-size: 11.5px; color: #B7C0CC;
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 6px; font-size: 11.5px; color: #B7C0CC;
   font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
 .card-unit { font-size: 10px; color: #8A97A8; font-weight: 500; }
 .card-main-value { font-family: 'JetBrains Mono', monospace; font-size: 26px; font-weight: 700; color: #E35F0C; }
@@ -4894,7 +5168,9 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .settings-header h2 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 18px; color: #EAF0F6; margin: 0; }
 .settings-section { padding: 20px; border-bottom: 1px solid rgba(255,255,255,.08); }
 .settings-section:last-child { border-bottom: none; }
-.settings-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.dev-admin-section { background: rgba(248,113,113,.06); border-left: 3px solid rgba(248,113,113,.3); }
+.dev-badge { background: rgba(248,113,113,.3) !important; color: #F87171 !important; }
+.settings-section-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .settings-section-header h3 { font-size: 13px; font-weight: 700; color: #22D3B8; text-transform: uppercase; letter-spacing: .03em; margin: 0; }
 .section-badge { font-size: 9px; font-weight: 600; background: rgba(248,113,113,.2); color: #F87171;
   padding: 4px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: .02em; }
