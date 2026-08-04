@@ -603,6 +603,30 @@ function withInitialStock(list) {
   return list.map((d) => (d.initialStock !== undefined ? d : { ...d, initialStock: d.stock }));
 }
 
+// The single source of truth for "how much of this dome is actually left." Given a
+// dome's INITIAL/gross stock (the one number that should never be second-guessed — it's
+// what was physically received) and the current barges, ALWAYS derives current remaining
+// stock fresh from what's actually been consumed by FINALIZED barges, rather than
+// trusting a separately-stored "current stock" figure that could be stale or wrong.
+//
+// This matters specifically for Google Sheets sync: if a dome's stock is ever updated by
+// editing the Sheet directly (or by any path other than this app's Import button), the
+// Sheet's "Stock (WMT)" column could easily end up holding the raw/gross figure instead
+// of a properly-netted current one — nobody ran the netting logic on it. Blindly trusting
+// that column on every sync pull would re-introduce exactly that stale/wrong number into
+// the dashboard. So the sync pull below ignores "Stock (WMT)" for computation purposes
+// entirely and only ever trusts "Initial Stock (WMT)", deriving current stock fresh
+// every time from real barge consumption. This makes stock tracking self-correcting
+// regardless of how or where the underlying Sheet data got updated.
+function reconcileStock(domeId, grossInitialStock, barges) {
+  const used = barges
+    .filter((b) => b.finalized)
+    .reduce((sum, b) => sum + (b.sources || []).filter((s) => s.id === domeId).reduce((s, x) => s + x.amt, 0), 0);
+  if (used <= 0) return { initialStock: grossInitialStock, stock: grossInitialStock };
+  if (used > grossInitialStock) return { initialStock: grossInitialStock + (used - grossInitialStock), stock: 0 };
+  return { initialStock: grossInitialStock, stock: grossInitialStock - used };
+}
+
 // Client-side regex parser for operation team loading reports — genuinely just pattern
 // matching, no API call of any kind. (The build spec's own overview mentioned "Claude
 // API Parser," but its implementation section and troubleshooting notes both confirm
@@ -1439,22 +1463,24 @@ function StockTab({ domes }) {
   // same "exclude unassayed (0% Ni) domes from the average" rule used elsewhere, so a
   // pile of not-yet-tested domes doesn't drag the blended grade down artificially.
   const filteredTotals = useMemo(() => {
-    let stockSum = 0, niSum = 0, niWeight = 0, feSum = 0, coSum = 0, sio2Sum = 0, mgoSum = 0, al2o3Sum = 0, simgSum = 0, simgWeight = 0;
+    let stockSum = 0;
+    const acc = { ni: 0, fe: 0, co: 0, sio2: 0, mgo: 0, al2o3: 0, simg: 0 };
+    const weight = { ni: 0, fe: 0, co: 0, sio2: 0, mgo: 0, al2o3: 0, simg: 0 };
     filtered.forEach((d) => {
       stockSum += d.stock;
-      feSum += d.stock * d.fe; coSum += d.stock * d.co; sio2Sum += d.stock * d.sio2; mgoSum += d.stock * d.mgo; al2o3Sum += d.stock * d.al2o3;
-      if (d.ni > 0) { niSum += d.stock * d.ni; niWeight += d.stock; }
-      if (d.simg > 0) { simgSum += d.stock * d.simg; simgWeight += d.stock; }
+      // Each field independently excludes domes where THAT field is 0 (unassayed) from
+      // both the sum and its own weight — a dome unassayed for Fe shouldn't dilute the
+      // Fe average just because it has a valid Co reading. Previously only Ni/Si:Mg did
+      // this; Fe/Co/SiO2/MgO/Al2O3 used total stock as the denominator regardless,
+      // understating their true average whenever any domes in the filter were unassayed.
+      ["ni", "fe", "co", "sio2", "mgo", "al2o3", "simg"].forEach((key) => {
+        if (d[key] > 0) { acc[key] += d.stock * d[key]; weight[key] += d.stock; }
+      });
     });
+    const avg = (key) => (weight[key] > 0 ? acc[key] / weight[key] : 0);
     return {
       stock: stockSum,
-      ni: niWeight > 0 ? niSum / niWeight : 0,
-      fe: stockSum > 0 ? feSum / stockSum : 0,
-      co: stockSum > 0 ? coSum / stockSum : 0,
-      sio2: stockSum > 0 ? sio2Sum / stockSum : 0,
-      mgo: stockSum > 0 ? mgoSum / stockSum : 0,
-      al2o3: stockSum > 0 ? al2o3Sum / stockSum : 0,
-      simg: simgWeight > 0 ? simgSum / simgWeight : 0,
+      ni: avg("ni"), fe: avg("fe"), co: avg("co"), sio2: avg("sio2"), mgo: avg("mgo"), al2o3: avg("al2o3"), simg: avg("simg"),
     };
   }, [filtered]);
   
@@ -1913,6 +1939,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
 /* ----------------------------- Timeline tab ----------------------------- */
 
 function TimelineTab({ barges, settings, isDevAccount }) {
+  const [hoveredMonth, setHoveredMonth] = useState(null);
   const monthCounts = useMemo(() => {
     const arr = MONTHS.map(() => ({ final: 0, draft: 0, finalWMT: 0, draftWMT: 0 }));
     barges.forEach((b) => {
@@ -1990,7 +2017,16 @@ function TimelineTab({ barges, settings, isDevAccount }) {
         <div className="panel-head"><TrendingUp size={16} /><span>Shipping schedule by month</span></div>
         <div className="month-chart">
           {monthCounts.map((m, i) => (
-            <div className="month-col" key={i} title={`${MONTHS[i]}: ${fmt(m.finalWMT + m.draftWMT)} WMT total (${fmt(m.finalWMT)} finalized, ${fmt(m.draftWMT)} draft)`}>
+            <div className="month-col" key={i} onMouseEnter={() => setHoveredMonth(i)} onMouseLeave={() => setHoveredMonth(null)}>
+              {hoveredMonth === i && (
+                <div className="chart-tooltip">
+                  <div className="chart-tooltip-title">{MONTHS[i]}</div>
+                  <div className="chart-tooltip-row"><span>Total</span><strong>{fmt(m.finalWMT + m.draftWMT)} WMT</strong></div>
+                  <div className="chart-tooltip-row"><span className="chart-tooltip-dot" style={{ background: "#E35F0C" }} />Finalized<strong>{fmt(m.finalWMT)} WMT</strong></div>
+                  <div className="chart-tooltip-row"><span className="chart-tooltip-dot" style={{ background: "#C9A227" }} />Draft<strong>{fmt(m.draftWMT)} WMT</strong></div>
+                  <div className="chart-tooltip-row chart-tooltip-muted"><span>Barges</span><strong>{m.final + m.draft}</strong></div>
+                </div>
+              )}
               <div className="month-bars">
                 <div className="month-bar month-bar-shipped" style={{ height: `${(m.final / maxCount) * 100}%` }} />
                 <div className="month-bar month-bar-other" style={{ height: `${(m.draft / maxCount) * 100}%` }} />
@@ -3487,7 +3523,7 @@ export default function IntegraDashboard() {
   useEffect(() => {
     if (!isLoggedIn) return;
     syncWithSheets(false);
-    const syncInterval = setInterval(() => syncWithSheets(false), 5 * 60 * 1000);
+    const syncInterval = setInterval(() => syncWithSheets(false), 15 * 60 * 1000);
     const onVisible = () => { if (document.visibilityState === "visible") syncWithSheets(false); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(syncInterval); document.removeEventListener("visibilitychange", onVisible); };
@@ -4123,7 +4159,7 @@ export default function IntegraDashboard() {
     const lastSyncStr = localStorage.getItem("lastSheetsSyncTime");
     const lastSync = lastSyncStr ? new Date(lastSyncStr) : null;
     const minutesSinceSync = lastSync ? (Date.now() - lastSync.getTime()) / 1000 / 60 : 999;
-    if (!force && minutesSinceSync < 5) return;
+    if (!force && minutesSinceSync < 15) return;
 
     setSheetsSyncStatus("Syncing…");
     setLastSyncError("");
@@ -4131,6 +4167,19 @@ export default function IntegraDashboard() {
     const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
     const freshHpm = await fetchHpmFromSheets();
     const freshExRate = await fetchExchangeRateFromSheets();
+
+    // Reconcile stock against actual finalized-barge consumption rather than trusting
+    // whatever the Sheet's "Stock (WMT)" column says — see reconcileStock's comment for
+    // why this matters. Only "Initial Stock (WMT)" is treated as ground truth here.
+    if (freshDomes && freshBarges) {
+      const reconciled = freshDomes.map((d) => ({ ...d, ...reconcileStock(d.id, d.initialStock, freshBarges) }));
+      const changed = reconciled.some((d, i) => d.stock !== freshDomes[i].stock || d.initialStock !== freshDomes[i].initialStock);
+      if (changed) {
+        setDomes(reconciled);
+        writeDomesToSheets(reconciled); // self-heal the Sheet so next sync doesn't need to re-derive this
+      }
+    }
+
     // Feature flags aren't just loaded at login anymore — if dev changes what someone
     // can see mid-session, this is what actually gets it to them without forcing a
     // logout/login. Best-effort: doesn't affect the overall sync status below, since a
@@ -4307,14 +4356,7 @@ export default function IntegraDashboard() {
           // has already been consumed by FINALIZED barges, clamping to 0 (and bumping
           // initialStock by the deficit) rather than silently resetting stock to the raw
           // imported figure, which would have erased that consumption bookkeeping.
-          const adjustedRows = rows.map((r) => {
-            const used = barges
-              .filter((b) => b.finalized)
-              .reduce((sum, b) => sum + (b.sources || []).filter((s) => s.id === r.id).reduce((s, x) => s + x.amt, 0), 0);
-            if (used <= 0) return { ...r, initialStock: r.stock };
-            if (used > r.stock) return { ...r, initialStock: r.stock + (used - r.stock), stock: 0 };
-            return { ...r, initialStock: r.stock, stock: r.stock - used };
-          });
+          const adjustedRows = rows.map((r) => ({ ...r, ...reconcileStock(r.id, r.stock, barges) }));
           const ids = new Set(adjustedRows.map((r) => r.id));
           merged = merged.filter((d) => !ids.has(d.id)).concat(adjustedRows);
         } catch (err) { console.error(err); }
@@ -5077,7 +5119,24 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .btn-toggle-on { background: rgba(74,222,128,.14); border-color: rgba(74,222,128,.4); color: #4ADE80; }
 
 .month-chart { display: flex; align-items: flex-end; gap: 6px; height: 140px; margin-bottom: 8px; }
-.month-col { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+.month-col { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+.chart-tooltip { position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); z-index: 30;
+  background: rgba(15,19,26,.98); border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 10px 12px;
+  min-width: 148px; box-shadow: 0 8px 24px rgba(0,0,0,.5); pointer-events: none; animation: tooltipFadeIn .12s ease-out; }
+.chart-tooltip::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: rgba(15,19,26,.98); }
+@keyframes tooltipFadeIn { from { opacity: 0; transform: translateX(-50%) translateY(4px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+.chart-tooltip-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 12px; color: #EAF0F6;
+  margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.chart-tooltip-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #B7C0CC; margin-bottom: 4px; white-space: nowrap; }
+.chart-tooltip-row:last-child { margin-bottom: 0; }
+.chart-tooltip-row strong { margin-left: auto; color: #EAF0F6; font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.chart-tooltip-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.chart-tooltip-muted { padding-top: 4px; margin-top: 4px; border-top: 1px solid rgba(255,255,255,.08); color: #8A97A8; }
+.month-col:first-child .chart-tooltip, .month-col:nth-child(2) .chart-tooltip { left: 0; transform: none; }
+.month-col:first-child .chart-tooltip::after, .month-col:nth-child(2) .chart-tooltip::after { left: 20px; transform: none; }
+.month-col:last-child .chart-tooltip, .month-col:nth-last-child(2) .chart-tooltip { left: auto; right: 0; transform: none; }
+.month-col:last-child .chart-tooltip::after, .month-col:nth-last-child(2) .chart-tooltip::after { left: auto; right: 20px; transform: none; }
 .month-bars { width: 100%; display: flex; flex-direction: column-reverse; align-items: center; height: 100px; justify-content: flex-start; }
 .month-bar { width: 60%; border-radius: 3px 3px 0 0; }
 .month-bar-shipped { background: #E35F0C; }
