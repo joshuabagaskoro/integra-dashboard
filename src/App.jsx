@@ -1701,6 +1701,22 @@ function StockTab({ domes }) {
           </select>
         </div>
         <div className="table-meta">{filtered.length} domes · {fmt(totalStock)} WMT remaining (live — reflects finalized barges)</div>
+
+        <div className="filtered-summary">
+          <div className="filtered-summary-label">Summary of domes shown below ({filtered.length})</div>
+          <div className="filtered-summary-grid">
+            <div className="filtered-summary-item"><span>Total Stock</span><strong>{fmt(filteredTotals.stock)}</strong></div>
+            <div className="filtered-summary-item"><span>Ni %</span><strong>{fmt(filteredTotals.ni, 2)}</strong></div>
+            <div className="filtered-summary-item"><span>Fe %</span><strong>{fmt(filteredTotals.fe, 2)}</strong></div>
+            <div className="filtered-summary-item"><span>Co %</span><strong>{fmt(filteredTotals.co, 3)}</strong></div>
+            <div className="filtered-summary-item"><span>SiO2 %</span><strong>{fmt(filteredTotals.sio2, 2)}</strong></div>
+            <div className="filtered-summary-item"><span>MgO %</span><strong>{fmt(filteredTotals.mgo, 2)}</strong></div>
+            <div className="filtered-summary-item"><span>Al2O3 %</span><strong>{fmt(filteredTotals.al2o3, 2)}</strong></div>
+            <div className="filtered-summary-item"><span>Si:Mg</span><strong>{fmt(filteredTotals.simg, 2)}</strong></div>
+          </div>
+          <div className="note" style={{ margin: "8px 0 0" }}>Weighted averages, each field excluding its own unassayed (0%) domes from the calculation — same as the list below, just visible without scrolling.</div>
+        </div>
+
         <div className="table-wrap table-wrap-tall">
           <table className="data-table">
             <thead>
@@ -1724,16 +1740,6 @@ function StockTab({ domes }) {
                 </tr>
               ))}
             </tbody>
-            <tfoot>
-              <tr className="table-totals-row">
-                <td colSpan={2}>Total ({filtered.length} domes)</td>
-                <td>—</td><td>—</td>
-                <td>{fmt(filteredTotals.stock)}</td>
-                <td>{fmt(filteredTotals.ni, 2)}</td><td>{fmt(filteredTotals.fe, 2)}</td><td>{fmt(filteredTotals.co, 3)}</td>
-                <td>{fmt(filteredTotals.sio2, 2)}</td><td>{fmt(filteredTotals.mgo, 2)}</td><td>{fmt(filteredTotals.al2o3, 2)}</td><td>{fmt(filteredTotals.simg, 2)}</td>
-                <td>—</td>
-              </tr>
-            </tfoot>
           </table>
         </div>
       </section>
@@ -2269,21 +2275,23 @@ function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser
       </div>
 
       {showForm && (
-        <div className="review-grid">
-          <div className="form-group"><label>Username</label>
-            <input className="login-input" value={newUser.username} onChange={(e) => setNewUser((p) => ({ ...p, username: e.target.value }))} /></div>
-          <div className="form-group"><label>Password</label>
-            <input type="password" className="login-input" value={newUser.password} onChange={(e) => setNewUser((p) => ({ ...p, password: e.target.value }))} /></div>
-          <div className="form-group"><label>Role</label>
-            <select className="login-input" value={newUser.role} onChange={(e) => setNewUser((p) => ({ ...p, role: e.target.value }))}>
-              <option value="operation">Operation</option>
-              <option value="admin">Admin</option>
-            </select></div>
+        <>
+          <div className="review-grid">
+            <div className="form-group"><label>Username</label>
+              <input className="login-input" value={newUser.username} onChange={(e) => setNewUser((p) => ({ ...p, username: e.target.value }))} /></div>
+            <div className="form-group"><label>Password</label>
+              <input type="password" className="login-input" value={newUser.password} onChange={(e) => setNewUser((p) => ({ ...p, password: e.target.value }))} /></div>
+            <div className="form-group"><label>Role</label>
+              <select className="login-input" value={newUser.role} onChange={(e) => setNewUser((p) => ({ ...p, role: e.target.value }))}>
+                <option value="operation">Operation</option>
+                <option value="admin">Admin</option>
+              </select></div>
+          </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={handleCreate} className="btn-settings-action btn-sync-sheets" style={{ flex: "1 1 100px" }}>Create</button>
             <button onClick={() => setShowForm(false)} className="btn-ghost" style={{ flex: "1 1 100px" }}>Cancel</button>
           </div>
-        </div>
+        </>
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -3448,6 +3456,8 @@ export default function IntegraDashboard() {
   const [exportBarge, setExportBarge] = useState(null); // barge object currently being exported, or null
   const domesByIdTop = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
   const [showImport, setShowImport] = useState(false);
+  const [importDate, setImportDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [dataLastUpdated, setDataLastUpdated] = useState(DATA_LAST_UPDATED);
   const [importStatus, setImportStatus] = useState("");
 
   useEffect(() => {
@@ -4057,6 +4067,27 @@ export default function IntegraDashboard() {
     }
   };
 
+  // ---- Meta — small key/value sheet for cross-team single values. Currently just
+  // DataLastUpdated (the "Data updated" date badge), so an Excel import from any admin's
+  // browser updates that date for everyone, not just locally for whoever did the import.
+  const writeMetaToSheets = async (updates) => {
+    const rows = toRows(["Key", "Value"], Object.entries(updates).map(([k, v]) => [k, v]));
+    return writeToSheets("Meta", rows);
+  };
+  const fetchMetaFromSheets = async () => {
+    try {
+      const response = await fetch("/api/sheets-read?sheetName=Meta");
+      if (!response.ok) throw new Error(await extractErrorDetail(response));
+      const { data } = await response.json();
+      const row = data.find((r) => r["Key"] === "DataLastUpdated");
+      if (row?.Value) setDataLastUpdated(row.Value);
+      return true;
+    } catch (error) {
+      console.error("Error fetching Meta from Sheets:", error);
+      return null; // best-effort — falls back to whatever's already in state/localStorage
+    }
+  };
+
   // ---- Sub-feature (granular) flags — a finer layer on top of the tab-level flags
   // above. If a user has no row in FeatureFlagsDetailed yet, their tab-level flags are
   // expanded into detailed flags (whole tab on -> every sub-feature on, and vice versa)
@@ -4167,6 +4198,7 @@ export default function IntegraDashboard() {
     const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
     const freshHpm = await fetchHpmFromSheets();
     const freshExRate = await fetchExchangeRateFromSheets();
+    fetchMetaFromSheets(); // best-effort, for everyone — the "Data updated" badge is visible to all roles
 
     // Reconcile stock against actual finalized-barge consumption rather than trusting
     // whatever the Sheet's "Stock (WMT)" column says — see reconcileStock's comment for
@@ -4371,7 +4403,7 @@ export default function IntegraDashboard() {
           // in-app Import button actually safe to use directly instead of going through
           // chat for every stock update.
           const mergedById = {}; merged.forEach((d) => { mergedById[d.id] = d; });
-          setBarges((prevBarges) => prevBarges.map((b) => {
+          const updatedBarges = barges.map((b) => {
             let changed = false;
             const newSources = b.sources.map((s) => {
               const d = mergedById[s.id];
@@ -4383,7 +4415,19 @@ export default function IntegraDashboard() {
             const niSum = newSources.reduce((sum, s) => sum + s.amt * (s.grade / 100), 0);
             const grade = totalWMT > 0 ? (niSum / totalWMT) * 100 : 0;
             return { ...b, sources: newSources, totalWMT, grade, status: statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance) };
-          }));
+          });
+          setBarges(updatedBarges);
+          setDataLastUpdated(importDate);
+          // Push straight to Sheets, same as the loading-report chat assistant does —
+          // previously this only updated local state, so the import looked like it
+          // worked but silently never reached Sheets. The next sync (or the next
+          // person's login) would then pull the OLD sheet data back over it, making the
+          // import appear to have been lost.
+          if (isAdmin) {
+            writeDomesToSheets(merged);
+            writeBargesToSheets(updatedBarges);
+            writeMetaToSheets({ DataLastUpdated: importDate });
+          }
           setImportStatus(`✓ Imported ${merged.length} domes`);
           setTimeout(() => { setShowImport(false); setImportStatus(""); }, 1500);
         }
@@ -4449,6 +4493,10 @@ export default function IntegraDashboard() {
             <div className="import-body">
               <p>Upload CSVs exported from each sheet (Dome Inventory Existing, Dome Production IMN-1..4).</p>
               <p style={{ fontSize: "10.5px", color: "#667080" }}>Tip: name the file with "imn-1" / "imn-2" etc. so it's tagged to the right contractor.</p>
+              <div className="form-group" style={{ marginBottom: 14 }}>
+                <label>Data date (shown as "Data updated" on the dashboard)</label>
+                <input type="date" className="login-input" value={importDate} onChange={(e) => setImportDate(e.target.value)} />
+              </div>
               <label className="import-input-label">
                 <input type="file" accept=".csv" multiple onChange={handleImport} />
                 <span>Select CSV file(s)</span>
@@ -4546,7 +4594,7 @@ export default function IntegraDashboard() {
             <div className="brand-name">INTEGRA</div>
             <div className="brand-sub">Nickel Ore Barging Plan · 2026</div>
             <div className="data-updated-badge" title="Last time stock/barge Excel data was updated">
-              <Calendar size={11} /> Data updated {fmtShortDate(DATA_LAST_UPDATED)}
+              <Calendar size={11} /> Data updated {fmtShortDate(dataLastUpdated)}
             </div>
           </div>
         </div>
@@ -4947,9 +4995,18 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .table-wrap { overflow-x: auto; }
 .table-wrap-tall { max-height: 520px; overflow-y: auto; }
 .table-meta { font-size: 11px; color: #667080; margin-bottom: 8px; }
+.filtered-summary { background: rgba(34,211,184,.05); border: 1px solid rgba(34,211,184,.18); border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 14px; }
+.filtered-summary-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #22D3B8; margin-bottom: 10px; }
+.filtered-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 12px; }
+.filtered-summary-item { display: flex; flex-direction: column; gap: 3px; }
+.filtered-summary-item span { font-size: 10px; color: #8A97A8; text-transform: uppercase; letter-spacing: .02em; }
+.filtered-summary-item strong { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 700; color: #EAF0F6; }
+
+@media (max-width: 640px) {
+  .filtered-summary-grid { grid-template-columns: repeat(2, 1fr); }
+}
 .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.table-totals-row { font-weight: 700; color: #22D3B8; background: rgba(34,211,184,.06); border-top: 2px solid rgba(34,211,184,.25); }
-.table-totals-row td { padding: 10px 8px; }
 .data-table th { position: sticky; top: 0; background: #0B1119; text-align: left; padding: 8px 10px; font-size: 10.5px; color: #8A97A8;
   text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid rgba(255,255,255,.1); white-space: nowrap; }
 .data-table th.sortable { cursor: pointer; user-select: none; }
