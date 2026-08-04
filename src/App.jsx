@@ -40,6 +40,95 @@ const LAB_FIELDS = [["ni", "Ni"], ["fe", "Fe"], ["co", "Co"], ["sio2", "SiO2"], 
 // Client-side credentials — fine for an internal team tool, not for external/production
 // use. Session token lives in sessionStorage (clears on browser close) rather than
 // localStorage, per the "logout when browser closes" requirement.
+// Full sub-feature structure for the granular (dev-only) feature configuration UI.
+// IMPORTANT: not every key here actually gates something in the real UI yet — some map
+// onto UI elements that don't exist as separate toggleable pieces (e.g. Stock's search
+// bar isn't a removable component, it's baked into the table). WIRED_SUBFEATURES below
+// lists exactly which keys are genuinely connected to conditional rendering. Toggling an
+// unwired key still saves correctly to the Sheet — it just won't visibly change anything
+// yet. This is intentional and documented rather than shipping fake toggles.
+const FEATURE_STRUCTURE = {
+  Stock: {
+    label: "Stock Management",
+    features: [
+      { key: "Stock_ViewInventory", label: "View Inventory" },
+      { key: "Stock_SearchDomes", label: "Search & Filter Domes" },
+      { key: "Stock_ContractorFilter", label: "Filter by Contractor" },
+      { key: "Stock_ProductionTargets", label: "View Production Targets" },
+      { key: "Stock_ImportExcel", label: "Import Excel Updates" },
+      { key: "Stock_ExportData", label: "Export Data" },
+    ],
+  },
+  Barging: {
+    label: "Barging Plan",
+    features: [
+      { key: "Barging_ViewBarges", label: "View Barges" },
+      { key: "Barging_CreateManual", label: "Create Barge (Manual)" },
+      { key: "Barging_CreateExcel", label: "Create Barge (Excel)" },
+      { key: "Barging_EditBarge", label: "Edit Barge Details" },
+      { key: "Barging_FinalizeBarges", label: "Finalize Barges" },
+      { key: "Barging_LoadingProgress", label: "Loading Progress Tracker" },
+      { key: "Barging_BatchQueue", label: "Batch Queue Auto-Sync" },
+    ],
+  },
+  Timeline: {
+    label: "Timeline",
+    features: [
+      { key: "Timeline_BargeTimeline", label: "Barge Timeline View" },
+      { key: "Timeline_LoadingProgress", label: "Loading Progress" },
+      { key: "Timeline_FilterBy", label: "Filter by Date/Status" },
+    ],
+  },
+  Financials: {
+    label: "Financials",
+    features: [
+      { key: "Financials_HMAPrice", label: "HPM Price Display" },
+      { key: "Financials_ExchangeRate", label: "Exchange Rate Display" },
+      { key: "Financials_RoyaltyCalculator", label: "Royalty Calculator" },
+      { key: "Financials_BargeBreakdown", label: "Barge Breakdown Table" },
+      { key: "Financials_ExportCSV", label: "Export CSV" },
+    ],
+  },
+  LoginLog: {
+    label: "Login Log",
+    features: [
+      { key: "LoginLog_ViewHistory", label: "View Login History" },
+      { key: "LoginLog_FilterByUser", label: "Filter by User" },
+      { key: "LoginLog_FilterByStatus", label: "Filter by Status" },
+      { key: "LoginLog_ExportCSV", label: "Export CSV" },
+    ],
+  },
+  Settings: {
+    label: "Settings",
+    features: [
+      { key: "Settings_ExportToSheets", label: "Export to Google Sheets" },
+      { key: "Settings_AccountManagement", label: "Account Management" },
+      { key: "Settings_FeatureConfiguration", label: "Feature Configuration" },
+      { key: "Settings_AccountInfo", label: "Account Info Display" },
+      { key: "Settings_Logout", label: "Logout Button" },
+    ],
+  },
+  ChatAssistant: {
+    label: "Chat Assistant",
+    features: [{ key: "ChatAssistant_Widget", label: "Loading Report Widget" }],
+  },
+};
+
+// Sub-features that are ACTUALLY wired to real conditional rendering right now. Anything
+// not in this set is genuinely saved/loaded correctly but doesn't hide/show anything yet
+// — see the comment on FEATURE_STRUCTURE above.
+//
+// Settings_AccountManagement and Settings_FeatureConfiguration are deliberately NOT
+// wired: only the single "dev" account can ever see that section at all (it's gated by
+// username, not a flag), so toggling either off would only ever affect dev's own access
+// to the tools that let them fix a bad toggle — the same self-lockout risk fixed
+// elsewhere in Settings. Not applicable until there's more than one dev-tier account.
+const WIRED_SUBFEATURES = new Set([
+  "Settings_ExportToSheets",
+  "Settings_Logout",
+  "ChatAssistant_Widget",
+]);
+
 const CREDENTIALS = {
   operation: { password: "opsintegra2026", role: "operation" },
   integra: { password: "admin-imn", role: "admin" },
@@ -2207,7 +2296,92 @@ function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser
   );
 }
 
-function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus, allUsers, allFeatureFlags, setAllUsers, setAllFeatureFlags, writeUsersToSheets, writeFeatureFlagsToSheets }) {
+/* ============================================================
+ * SubFeatureConfiguration — granular per-user, per-tab feature toggles.
+ * Select a user, select a tab, see every sub-feature in that tab as a
+ * checkbox. Select All / Deselect All shortcuts. Saves to both the
+ * detailed sheet and the tab-level sheet (derived from it) at once.
+ * ============================================================ */
+function SubFeatureConfiguration({ allUsers, allDetailedFlags, onSave }) {
+  const [selectedUser, setSelectedUser] = useState("");
+  const [selectedTab, setSelectedTab] = useState("");
+  const [localFlags, setLocalFlags] = useState(allDetailedFlags);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => { setLocalFlags(allDetailedFlags); }, [allDetailedFlags]);
+
+  const tabConfig = selectedTab ? FEATURE_STRUCTURE[selectedTab] : null;
+  const userFlags = selectedUser ? (localFlags[selectedUser] || {}) : {};
+  const isOn = (key) => userFlags[key] === "true" || userFlags[key] === true;
+  const allEnabled = tabConfig ? tabConfig.features.every((f) => isOn(f.key)) : false;
+  const allDisabled = tabConfig ? tabConfig.features.every((f) => !isOn(f.key)) : false;
+
+  const setFlags = (updater) => setLocalFlags((prev) => ({ ...prev, [selectedUser]: updater(prev[selectedUser] || {}) }));
+  const handleToggle = (key) => setFlags((flags) => ({ ...flags, [key]: !isOn(key) }));
+  const handleSelectAll = () => setFlags((flags) => ({ ...flags, ...Object.fromEntries(tabConfig.features.map((f) => [f.key, true])) }));
+  const handleDeselectAll = () => setFlags((flags) => ({ ...flags, ...Object.fromEntries(tabConfig.features.map((f) => [f.key, false])) }));
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    const success = await onSave(localFlags);
+    setIsSaving(false);
+    if (success) alert(`✅ Saved for ${selectedUser} — ${tabConfig.label}`);
+    else alert("❌ Save failed — check the sync error detail above.");
+  };
+
+  return (
+    <div className="settings-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
+      <div className="card-content"><h4>🔧 Feature Configuration</h4><p>Select a user and tab to fine-tune individual sub-features.</p></div>
+
+      <div className="review-grid">
+        <div className="form-group"><label>User</label>
+          <select className="login-input" value={selectedUser} onChange={(e) => { setSelectedUser(e.target.value); setSelectedTab(""); }}>
+            <option value="">Choose user...</option>
+            {allUsers.map((u) => <option key={u["Username"]} value={u["Username"]}>{u["Username"]}</option>)}
+          </select>
+        </div>
+        {selectedUser && (
+          <div className="form-group"><label>Tab</label>
+            <select className="login-input" value={selectedTab} onChange={(e) => setSelectedTab(e.target.value)}>
+              <option value="">Choose tab...</option>
+              {Object.entries(FEATURE_STRUCTURE).map(([key, cfg]) => <option key={key} value={key}>{cfg.label}</option>)}
+            </select>
+          </div>
+        )}
+      </div>
+
+      {tabConfig && (
+        <>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button onClick={handleSelectAll} disabled={allEnabled || isSaving} className="btn-settings-action btn-sync-sheets" style={{ flex: "1 1 100px" }}>Select All</button>
+            <button onClick={handleDeselectAll} disabled={allDisabled || isSaving} className="btn-settings-action btn-logout-action" style={{ flex: "1 1 100px" }}>Deselect All</button>
+          </div>
+
+          <div className="lab-list" style={{ background: "rgba(0,0,0,.2)" }}>
+            {tabConfig.features.map((f) => (
+              <label key={f.key} className="lab-item" style={{ flexDirection: "row", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <input type="checkbox" checked={isOn(f.key)} onChange={() => handleToggle(f.key)} disabled={isSaving}
+                  style={{ width: 15, height: 15, accentColor: "#22D3B8", flexShrink: 0 }} />
+                <span className="lab-detail" style={{ color: "#EAF0F6" }}>
+                  {f.label}{!WIRED_SUBFEATURES.has(f.key) && <span style={{ color: "#8A97A8", fontSize: "10px" }}> (not yet wired to UI)</span>}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button onClick={() => setSelectedTab("")} className="btn-ghost" disabled={isSaving} style={{ flex: "1 1 100px", justifyContent: "center" }}>Back</button>
+            <button onClick={handleSave} className="btn-settings-action btn-sync-sheets" disabled={isSaving} style={{ flex: "1 1 100px", justifyContent: "center" }}>
+              {isSaving ? "Saving…" : "Save Configuration"}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus, allUsers, allFeatureFlags, setAllUsers, setAllFeatureFlags, writeUsersToSheets, writeFeatureFlagsToSheets, allDetailedFlags, setAllDetailedFlags, writeDetailedFeatureFlagsToSheets, isFeatureEnabled }) {
   return (
     <div className="stack">
       <section className="glass panel" style={{ padding: 0 }}>
@@ -2284,17 +2458,22 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                   const updatedFlags = { ...allFeatureFlags };
                   delete updatedFlags[username];
                   setAllFeatureFlags(updatedFlags);
+                  const updatedDetailed = { ...allDetailedFlags };
+                  delete updatedDetailed[username];
+                  setAllDetailedFlags(updatedDetailed);
                   const usersOk = await writeUsersToSheets(updatedUsers);
                   const flagsOk = await writeFeatureFlagsToSheets(updatedFlags);
-                  alert(usersOk && flagsOk ? `✅ User ${username} deleted` : "❌ Failed to fully delete user");
+                  const detailedOk = await writeDetailedFeatureFlagsToSheets(updatedDetailed);
+                  alert(usersOk && flagsOk && detailedOk ? `✅ User ${username} deleted` : "❌ Failed to fully delete user");
                 }}
               />
               <FeatureToggleConfig allUsers={allUsers} allFeatureFlags={allFeatureFlags} onSave={writeFeatureFlagsToSheets} />
+              <SubFeatureConfiguration allUsers={allUsers} allDetailedFlags={allDetailedFlags} onSave={writeDetailedFeatureFlagsToSheets} />
             </div>
           </div>
         )}
 
-        {isAdmin && (
+        {isAdmin && isFeatureEnabled("Settings_ExportToSheets", true) && (
           <div className="settings-section">
             <div className="settings-section-header">
               <h3>Data Export</h3>
@@ -2319,9 +2498,11 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
               <h4>Logged in as: <strong>{currentUser?.username}</strong></h4>
               <p>Role: {currentUser?.role === "admin" ? "Administrator" : "Operations"}</p>
             </div>
-            <button onClick={handleLogout} className="btn-settings-action btn-logout-action">
-              <LogOut size={16} /> <span>Logout</span>
-            </button>
+            {isFeatureEnabled("Settings_Logout", true) && (
+              <button onClick={handleLogout} className="btn-settings-action btn-logout-action">
+                <LogOut size={16} /> <span>Logout</span>
+              </button>
+            )}
           </div>
         </div>
       </section>
@@ -3238,6 +3419,8 @@ export default function IntegraDashboard() {
   });
   const [allUsers, setAllUsers] = useState([]);
   const [allFeatureFlags, setAllFeatureFlags] = useState({});
+  const [userDetailedFeatures, setUserDetailedFeatures] = useState({});
+  const [allDetailedFlags, setAllDetailedFlags] = useState({});
   const [exchangeRateHistory, setExchangeRateHistory] = useState(DEFAULT_EXCHANGE_RATE_HISTORY);
 
   const [statusBarge, setStatusBarge] = useState(null); // barge object currently having its status checked, or null
@@ -3337,7 +3520,8 @@ export default function IntegraDashboard() {
     setIsLoggedIn(true);
     setShowWelcome(true);
     loadUserFeaturesFromSheets(username);
-    if (username === "dev") loadAllUsersAndFlags();
+    loadUserDetailedFeatures(username);
+    if (username === "dev") { loadAllUsersAndFlags(); loadAllDetailedFlags(); }
     setTimeout(() => setShowWelcome(false), 3000);
   };
 
@@ -3829,6 +4013,103 @@ export default function IntegraDashboard() {
     return writeToSheets("Users", rows);
   };
 
+  // ---- Sub-feature (granular) flags — a finer layer on top of the tab-level flags
+  // above. If a user has no row in FeatureFlagsDetailed yet, their tab-level flags are
+  // expanded into detailed flags (whole tab on -> every sub-feature on, and vice versa)
+  // rather than defaulting to something disconnected from what they already have.
+  const convertTabFlagsToDetailed = (tabFlags) => {
+    const detailed = {};
+    Object.entries(FEATURE_STRUCTURE).forEach(([tabKey, tabConfig]) => {
+      const tabEnabled = tabFlags[tabKey] === "true" || tabFlags[tabKey] === true;
+      tabConfig.features.forEach((feature) => { detailed[feature.key] = tabEnabled ? "true" : "false"; });
+    });
+    return detailed;
+  };
+  const isTabEnabled = (detailedFlags, tabKey) => {
+    if (!FEATURE_STRUCTURE[tabKey]) return false;
+    return FEATURE_STRUCTURE[tabKey].features.some((f) => detailedFlags[f.key] === "true" || detailedFlags[f.key] === true);
+  };
+
+  const loadUserDetailedFeatures = async (username) => {
+    try {
+      const detailedRes = await fetch("/api/sheets-read?sheetName=FeatureFlagsDetailed");
+      if (detailedRes.ok) {
+        const { data } = await detailedRes.json();
+        const userConfig = data.find((row) => row["Username"] === username);
+        if (userConfig) { setUserDetailedFeatures(userConfig); return; }
+      }
+      // No detailed row for this user — derive detailed flags from their tab-level
+      // flags instead of silently defaulting to something disconnected from what
+      // they already have.
+      const tabRes = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      if (!tabRes.ok) return;
+      const { data } = await tabRes.json();
+      const userConfig = data.find((row) => row["Username"] === username);
+      if (userConfig) setUserDetailedFeatures(convertTabFlagsToDetailed(userConfig));
+    } catch (error) {
+      console.error("Error loading detailed features:", error);
+    }
+  };
+
+  const loadAllDetailedFlags = async () => {
+    try {
+      const detailedRes = await fetch("/api/sheets-read?sheetName=FeatureFlagsDetailed");
+      if (detailedRes.ok) {
+        const { data } = await detailedRes.json();
+        const flagsObj = {};
+        data.forEach((row) => { flagsObj[row["Username"]] = row; });
+        setAllDetailedFlags(flagsObj);
+        return;
+      }
+      const tabRes = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      if (!tabRes.ok) return;
+      const { data } = await tabRes.json();
+      const flagsObj = {};
+      data.forEach((row) => { flagsObj[row["Username"]] = convertTabFlagsToDetailed(row); });
+      setAllDetailedFlags(flagsObj);
+    } catch (error) {
+      console.error("Error loading all detailed flags:", error);
+    }
+  };
+
+  const DETAILED_HEADERS = ["Username", ...Object.values(FEATURE_STRUCTURE).flatMap((t) => t.features.map((f) => f.key))];
+
+  const writeDetailedFeatureFlagsToSheets = async (detailedFlagsData) => {
+    // Keep the simple tab-level sheet in sync too — derived as "on" if ANY sub-feature
+    // in that tab is on, so the fast/simple tab-level toggle stays meaningful even
+    // after fine-tuning individual sub-features.
+    const tabRows = toRows(
+      ["Username", "Stock", "Barging", "Timeline", "Financials", "LoginLog", "Settings", "ChatAssistant"],
+      Object.entries(detailedFlagsData).map(([username, flags]) => [
+        username,
+        isTabEnabled(flags, "Stock") ? "true" : "false", isTabEnabled(flags, "Barging") ? "true" : "false",
+        isTabEnabled(flags, "Timeline") ? "true" : "false", isTabEnabled(flags, "Financials") ? "true" : "false",
+        isTabEnabled(flags, "LoginLog") ? "true" : "false", isTabEnabled(flags, "Settings") ? "true" : "false",
+        flags["ChatAssistant_Widget"] === "true" || flags["ChatAssistant_Widget"] === true ? "true" : "false",
+      ])
+    );
+    const tabOk = await writeToSheets("FeatureFlags", tabRows);
+
+    const detailedRows = toRows(
+      DETAILED_HEADERS,
+      Object.entries(detailedFlagsData).map(([username, flags]) => [
+        username, ...DETAILED_HEADERS.slice(1).map((key) => (flags[key] === true || flags[key] === "true" ? "true" : "false")),
+      ])
+    );
+    const detailedOk = await writeToSheets("FeatureFlagsDetailed", detailedRows);
+    return tabOk && detailedOk;
+  };
+
+  // What components actually call to decide whether to render something. Checks the
+  // detailed flag first; if that specific key was never loaded (e.g. Sheets unreachable,
+  // or this key isn't in WIRED_SUBFEATURES so nobody's bothered setting it), falls back
+  // to the tab-level flag so nothing breaks.
+  const isFeatureEnabled = (featureKey, tabLevelFallback) => {
+    if (userDetailedFeatures[featureKey] !== undefined) {
+      return userDetailedFeatures[featureKey] === "true" || userDetailedFeatures[featureKey] === true;
+    }
+    return tabLevelFallback !== false;
+  };
 
   const syncWithSheets = async (force = false) => {
     if (!isAdmin) return;
@@ -4082,7 +4363,7 @@ export default function IntegraDashboard() {
         <div className="test-badge">🧪 TEST ACCOUNT</div>
       )}
 
-      {isDevAccount && userFeatures.chatAssistant && (
+      {isDevAccount && isFeatureEnabled("ChatAssistant_Widget", userFeatures.chatAssistant) && (
         <button className="loading-assistant-btn" onClick={() => setShowLoadingReportModal(true)} title="Parse shipment loading report">
           <MessageSquare size={20} />
           <span>Chat</span>
@@ -4247,7 +4528,9 @@ export default function IntegraDashboard() {
           <SettingsTab isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} exportAllForGoogleSheets={exportAllForGoogleSheets}
             syncWithSheets={syncWithSheets} sheetsSyncStatus={sheetsSyncStatus} lastSyncTime={lastSyncTime} lastSyncError={lastSyncError} exRateFetchStatus={exRateFetchStatus}
             allUsers={allUsers} allFeatureFlags={allFeatureFlags} setAllUsers={setAllUsers} setAllFeatureFlags={setAllFeatureFlags}
-            writeUsersToSheets={writeUsersToSheets} writeFeatureFlagsToSheets={writeFeatureFlagsToSheets} />
+            writeUsersToSheets={writeUsersToSheets} writeFeatureFlagsToSheets={writeFeatureFlagsToSheets}
+            allDetailedFlags={allDetailedFlags} setAllDetailedFlags={setAllDetailedFlags} writeDetailedFeatureFlagsToSheets={writeDetailedFeatureFlagsToSheets}
+            isFeatureEnabled={isFeatureEnabled} />
         )}
       </main>
     </div>
