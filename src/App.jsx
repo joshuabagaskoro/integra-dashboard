@@ -127,6 +127,10 @@ const WIRED_SUBFEATURES = new Set([
   "Settings_ExportToSheets",
   "Settings_Logout",
   "ChatAssistant_Widget",
+  "Stock_ImportExcel",
+  "Barging_CreateManual",
+  "Barging_CreateExcel",
+  "Barging_FinalizeBarges",
 ]);
 
 const CREDENTIALS = {
@@ -904,8 +908,14 @@ function poolFromDomes(domes, subtractBarges) {
 
 /* ----------------------------- import parsing ----------------------------- */
 
+// Files from this workflow use the European/Indonesian CSV convention: semicolon (;) as
+// the field delimiter, comma (,) as the decimal separator — e.g. "1,47" means 1.47, not
+// 147. Plain parseFloat("1,47") stops at the comma and silently returns just 1,
+// truncating every decimal in the file. Convert comma to dot before parsing to fix this.
+const cleanEuroNum = (v) => parseFloat(String(v ?? "").trim().replace(",", ".")) || 0;
+
 function parseDomeCSV(csv, source, forcedContractor) {
-  const rows = Papa.parse(csv, { skipEmptyLines: true }).data;
+  const rows = Papa.parse(csv, { skipEmptyLines: true, delimiter: ";" }).data;
   if (!rows.length) return [];
   const out = [];
   for (let i = 1; i < rows.length; i++) {
@@ -913,9 +923,9 @@ function parseDomeCSV(csv, source, forcedContractor) {
     if (!domeId) continue;
     out.push({
       id: domeId, contractor: forcedContractor || cid || "UNKNOWN",
-      stock: parseFloat(stock) || 0, ni: parseFloat(ni) || 0, fe: parseFloat(fe) || 0,
-      co: parseFloat(co) || 0, sio2: parseFloat(sio2) || 0, mgo: parseFloat(mgo) || 0,
-      al2o3: parseFloat(al2o3) || 0, simg: parseFloat(simg) || 0, location: loc || "",
+      stock: cleanEuroNum(stock), ni: cleanEuroNum(ni), fe: cleanEuroNum(fe),
+      co: cleanEuroNum(co), sio2: cleanEuroNum(sio2), mgo: cleanEuroNum(mgo),
+      al2o3: cleanEuroNum(al2o3), simg: cleanEuroNum(simg), location: loc || "",
       source,
     });
   }
@@ -933,7 +943,7 @@ function parseBargeComposition(rows) {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !row[domeIdx]) continue;
-    const amt = parseFloat(row[wmtIdx]) || 0;
+    const amt = cleanEuroNum(row[wmtIdx]);
     if (amt <= 0) continue;
     out.push({ domeId: String(row[domeIdx]).trim(), amt });
   }
@@ -1749,7 +1759,7 @@ function StockTab({ domes }) {
 
 /* ----------------------------- Barging Plan tab ----------------------------- */
 
-function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted }) {
+function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
   const [open, setOpen] = useState(false);
   const [addDome, setAddDome] = useState("");
   const [addAmt, setAddAmt] = useState("");
@@ -1913,17 +1923,21 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
                 <input type="number" placeholder="WMT" value={addAmt} onChange={(e) => setAddAmt(e.target.value)} />
                 <button className="btn-ghost" onClick={addSourceRow}><Plus size={13} /> Add</button>
               </div>
-              <label className="import-barge-label">
-                <FileUp size={13} /> Import final plan for this barge (.xlsx / .csv)
-                <input type="file" accept=".xlsx,.csv" onChange={handleFileImport} />
-              </label>
+              {isFeatureEnabled("Barging_CreateExcel", true) && (
+                <label className="import-barge-label">
+                  <FileUp size={13} /> Import final plan for this barge (.xlsx / .csv)
+                  <input type="file" accept=".xlsx,.csv" onChange={handleFileImport} />
+                </label>
+              )}
             </>
           )}
 
           <div className="barge-row-actions">
-            <button className={`btn-toggle ${barge.finalized ? "btn-toggle-on" : ""}`} onClick={() => onFinalize(barge.no)}>
-              {barge.finalized ? <><Unlock size={13} /> Reopen</> : <><Lock size={13} /> Finalize</>}
-            </button>
+            {isFeatureEnabled("Barging_FinalizeBarges", true) && (
+              <button className={`btn-toggle ${barge.finalized ? "btn-toggle-on" : ""}`} onClick={() => onFinalize(barge.no)}>
+                {barge.finalized ? <><Unlock size={13} /> Reopen</> : <><Lock size={13} /> Finalize</>}
+              </button>
+            )}
             <button className="btn-status" onClick={() => onCheckStatus(barge)}>
               <AlertTriangle size={13} /> Check Status
             </button>
@@ -4608,7 +4622,9 @@ export default function IntegraDashboard() {
             {isAdmin && userFeatures.loginLog && <NavButton icon={History} label="Login Log" active={tab === "log"} onClick={() => setTab("log")} />}
             {(userFeatures.settings || currentUser?.username === "dev") && <NavButton icon={Settings} label="Settings" active={tab === "settings"} onClick={() => setTab("settings")} />}
           </nav>
-          <button className="btn-import" onClick={() => setShowImport(!showImport)}><Upload size={14} /> Import</button>
+          {isFeatureEnabled("Stock_ImportExcel", true) && (
+            <button className="btn-import" onClick={() => setShowImport(!showImport)}><Upload size={14} /> Import</button>
+          )}
           <button className="btn-logout" onClick={handleLogout} title={`Log out (${currentUser?.username})`}>
             <LogOut size={13} /> <span className="btn-logout-label">Logout</span>
           </button>
@@ -4619,7 +4635,7 @@ export default function IntegraDashboard() {
       <main className="content">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && userFeatures.stock && <StockTab domes={domes} />}
-        {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} />}
+        {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
         {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} />}
         {tab === "financials" && isAdmin && userFeatures.financials && (
           <FinancialsTab
@@ -4646,7 +4662,7 @@ export default function IntegraDashboard() {
 }
 
 /* PlanTabWired: thin wrapper so finalize can reach the top-level setDomes */
-function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted }) {
+function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
   const [filter, setFilter] = useState("all");
   const [genCount, setGenCount] = useState(5);
   const [genContractors, setGenContractors] = useState(null); // null = all
@@ -4764,7 +4780,9 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
 
       <section className="glass panel generate-panel">
         <div className="panel-head"><Ship size={16} /><span>Add to the plan</span></div>
-        <button className="btn-ghost add-blank-btn" onClick={addBlankBarge}><Plus size={14} /> Add blank barge</button>
+        {isFeatureEnabled("Barging_CreateManual", true) && (
+          <button className="btn-ghost add-blank-btn" onClick={addBlankBarge}><Plus size={14} /> Add blank barge</button>
+        )}
 
         <div className="gen-form">
           <div className="gen-form-title">Suggested plan generator</div>
@@ -4843,7 +4861,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
         )}
         {filtered.map((b) => (
           <BargeRow key={b.no} barge={b} domesById={domesById} pool={pool}
-            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} onCheckStatus={onCheckStatus} onDataCommitted={onDataCommitted} />
+            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} onCheckStatus={onCheckStatus} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />
         ))}
       </section>
     </div>
