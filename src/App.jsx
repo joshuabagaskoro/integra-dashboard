@@ -1800,7 +1800,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
     if (file.name.toLowerCase().endsWith(".csv")) {
       const reader = new FileReader();
       reader.onload = (evt) => {
-        const rows = Papa.parse(evt.target.result, { skipEmptyLines: true }).data;
+        const rows = Papa.parse(evt.target.result, { skipEmptyLines: true, delimiter: ";" }).data;
         const comp = parseBargeComposition(rows);
         applyImportedComposition(comp);
       };
@@ -1819,6 +1819,10 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
     e.target.value = "";
   };
   const applyImportedComposition = (comp) => {
+    if (!comp.length) {
+      alert("⚠️ No usable rows found in this file. Check that it has a header row with a column containing \"Dome\" and a column containing \"WMT\"/\"Stock\"/\"Weight\", and that the delimiter matches your other Integra export files (semicolon-separated).");
+      return;
+    }
     const validSources = [];
     const unknownIds = [];
     comp.forEach((c) => {
