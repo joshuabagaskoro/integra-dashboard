@@ -2209,8 +2209,22 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
  * LoginLogTab — admin-only view of all login attempts.
  * ============================================================ */
 function LoginLogTab({ loginHistory }) {
+  const [filterUser, setFilterUser] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const [sortOrder, setSortOrder] = useState("desc");
+
   const successCount = loginHistory.filter((l) => l.status === "Successful").length;
   const failedCount = loginHistory.filter((l) => l.status === "Failed").length;
+
+  const filtered = useMemo(() => {
+    let list = loginHistory;
+    if (filterUser.trim()) list = list.filter((l) => l.username?.toLowerCase().includes(filterUser.trim().toLowerCase()));
+    if (filterStatus) list = list.filter((l) => l.status === filterStatus);
+    return [...list].sort((a, b) => {
+      const diff = new Date(a.timestamp) - new Date(b.timestamp);
+      return sortOrder === "desc" ? -diff : diff;
+    });
+  }, [loginHistory, filterUser, filterStatus, sortOrder]);
 
   return (
     <div className="stack">
@@ -2218,14 +2232,33 @@ function LoginLogTab({ loginHistory }) {
         <div className="panel-head"><History size={16} /><span>Login History</span></div>
         <p className="note" style={{ marginBottom: 16 }}>All login attempts (successful &amp; failed) are tracked here.</p>
 
+        <div className="review-grid" style={{ marginBottom: 16 }}>
+          <div className="form-group"><label>Filter by username</label>
+            <input className="login-input" placeholder="e.g. operation" value={filterUser} onChange={(e) => setFilterUser(e.target.value)} />
+          </div>
+          <div className="form-group"><label>Filter by status</label>
+            <select className="login-input" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+              <option value="">All statuses</option>
+              <option value="Successful">Successful</option>
+              <option value="Failed">Failed</option>
+            </select>
+          </div>
+          <div className="form-group"><label>Sort</label>
+            <select className="login-input" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
+              <option value="desc">Newest first</option>
+              <option value="asc">Oldest first</option>
+            </select>
+          </div>
+        </div>
+
         <div className="log-table">
           <div className="log-header-row">
             <div className="log-cell log-cell-time">Timestamp</div>
             <div className="log-cell log-cell-user">Username</div>
             <div className="log-cell log-cell-status">Status</div>
           </div>
-          {loginHistory.length === 0 && <div className="log-empty">No login history yet.</div>}
-          {loginHistory.map((entry, idx) => {
+          {filtered.length === 0 && <div className="log-empty">{loginHistory.length === 0 ? "No login history yet." : "No entries match this filter."}</div>}
+          {filtered.map((entry, idx) => {
             const timeStr = new Date(entry.timestamp).toLocaleString("en-US", {
               year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
             });
@@ -2240,6 +2273,8 @@ function LoginLogTab({ loginHistory }) {
             );
           })}
         </div>
+
+        <p className="note" style={{ textAlign: "right", marginTop: 8 }}>Showing {filtered.length} of {loginHistory.length} entries</p>
 
         <div className="mini-stats-row">
           <div className="mini-stat-card">
@@ -5658,7 +5693,7 @@ html, body { margin: 0; padding: 0; background: #070A10; }
   .loading-overall-pct { margin-left: 0; }
   .loading-barge-meta { flex-direction: column; gap: 2px; }
 }
-.review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 8px; }
+.review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 320px)); gap: 14px; margin-bottom: 8px; }
 
 @media (max-width: 768px) {
   .loading-assistant-btn { bottom: 16px; right: 16px; width: 48px; height: 48px; font-size: 9px; }
