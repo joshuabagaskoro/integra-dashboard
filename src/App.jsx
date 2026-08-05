@@ -934,20 +934,56 @@ function parseDomeCSV(csv, source, forcedContractor) {
 
 // Reads a simple 2-column barge composition file: Dome ID, WMT (xlsx or csv)
 function parseBargeComposition(rows) {
-  // rows: array of arrays (first row = header)
-  if (!rows.length) return [];
-  const header = rows[0].map((h) => String(h || "").toLowerCase().trim());
-  const domeIdx = header.findIndex((h) => h.includes("dome"));
-  const wmtIdx = header.findIndex((h) => h.includes("wmt") || h.includes("stock") || h.includes("weight"));
-  const out = [];
-  for (let i = 1; i < rows.length; i++) {
+  // The real template (see the Instructions sheet in the .xlsx) puts DATE, BARGE NAME,
+  // and TUGBOAT NAME as metadata rows BEFORE the actual "Dome ID"/"WMT" table — e.g.:
+  //   Row 0: DATE | 2026-08-01
+  //   Row 1: BARGE NAME | BG POLARIS 325
+  //   Row 2: TUGBOAT NAME | TB JELAJAH 325
+  //   Row 3: Dome ID | WMT      <- the real header
+  //   Row 4+: dome data
+  // Assuming row 0 is always the header (the old behavior) meant every row's Dome ID
+  // lookup silently failed for any file using this metadata-first layout — exactly the
+  // "no usable rows" failure. Scan for the actual header row instead of assuming its
+  // position, and pull the metadata rows above it along the way.
+  if (!rows.length) return { date: null, bargeName: null, tugboatName: null, sources: [] };
+
+  let headerRowIdx = -1;
+  let domeIdx = -1, wmtIdx = -1;
+  const meta = { date: null, bargeName: null, tugboatName: null };
+
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const row = rows[i] || [];
+    const cells = row.map((c) => String(c || "").toLowerCase().trim());
+    const foundDome = cells.findIndex((c) => c.includes("dome"));
+    const foundWmt = cells.findIndex((c) => c.includes("wmt") || c.includes("stock") || c.includes("weight"));
+    if (foundDome !== -1 && foundWmt !== -1) {
+      headerRowIdx = i; domeIdx = foundDome; wmtIdx = foundWmt;
+      break;
+    }
+    // Not the header row — check if it's a metadata label row (label in col A, value in col B)
+    const label = cells[0] || "";
+    const value = row[1];
+    if (value === undefined || value === "") continue;
+    if (label.includes("date")) {
+      meta.date = value instanceof Date ? value.toISOString().split("T")[0] : String(value).trim();
+    } else if (label.includes("barge") && label.includes("name")) {
+      meta.bargeName = String(value).trim();
+    } else if (label.includes("tugboat") || (label.includes("tb") && label.includes("name"))) {
+      meta.tugboatName = String(value).trim();
+    }
+  }
+
+  if (headerRowIdx === -1) return { ...meta, sources: [] }; // couldn't find a Dome/WMT header anywhere in the first 15 rows
+
+  const sources = [];
+  for (let i = headerRowIdx + 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !row[domeIdx]) continue;
     const amt = cleanEuroNum(row[wmtIdx]);
     if (amt <= 0) continue;
-    out.push({ domeId: String(row[domeIdx]).trim(), amt });
+    sources.push({ domeId: String(row[domeIdx]).trim(), amt });
   }
-  return out;
+  return { ...meta, sources };
 }
 
 /* ----------------------------- small UI bits ----------------------------- */
@@ -1800,8 +1836,16 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
     if (file.name.toLowerCase().endsWith(".csv")) {
       const reader = new FileReader();
       reader.onload = (evt) => {
-        const rows = Papa.parse(evt.target.result, { skipEmptyLines: true, delimiter: ";" }).data;
-        const comp = parseBargeComposition(rows);
+        // This template is a different export path than the Stock tab's CSVs (it can
+        // come from Excel's own "Download as CSV", which doesn't reliably use the same
+        // semicolon convention) — try semicolon first since that matches the rest of
+        // this project's files, then fall back to comma if that finds no usable header.
+        let rows = Papa.parse(evt.target.result, { skipEmptyLines: true, delimiter: ";" }).data;
+        let comp = parseBargeComposition(rows);
+        if (!comp.sources.length) {
+          rows = Papa.parse(evt.target.result, { skipEmptyLines: true, delimiter: "," }).data;
+          comp = parseBargeComposition(rows);
+        }
         applyImportedComposition(comp);
       };
       reader.readAsText(file);
@@ -1819,13 +1863,13 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
     e.target.value = "";
   };
   const applyImportedComposition = (comp) => {
-    if (!comp.length) {
-      alert("⚠️ No usable rows found in this file. Check that it has a header row with a column containing \"Dome\" and a column containing \"WMT\"/\"Stock\"/\"Weight\", and that the delimiter matches your other Integra export files (semicolon-separated).");
+    if (!comp.sources.length) {
+      alert("⚠️ No usable rows found in this file. Check that it has a \"Dome ID\" / \"WMT\" header row somewhere in the first 15 rows, and that Dome IDs match what's on the Stock tab.");
       return;
     }
     const validSources = [];
     const unknownIds = [];
-    comp.forEach((c) => {
+    comp.sources.forEach((c) => {
       const d = domesById[c.domeId];
       if (d) validSources.push({ id: c.domeId, amt: c.amt, grade: d.ni });
       else unknownIds.push(c.domeId);
@@ -1838,7 +1882,14 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
       );
     }
     if (validSources.length) {
-      const freshBarges = onImport(barge.no, validSources);
+      // Apply the metadata (Date/Barge Name/Tugboat Name) alongside the sources in one
+      // combined update, rather than the sources plus separate metadata patches — avoids
+      // three back-to-back updates each re-triggering their own Sheets write.
+      const patch = {};
+      if (comp.date) patch.shipDate = comp.date;
+      if (comp.bargeName) patch.bargeName = comp.bargeName;
+      if (comp.tugboatName) patch.tugboatName = comp.tugboatName;
+      const freshBarges = onImport(barge.no, validSources, Object.keys(patch).length ? patch : undefined);
       onDataCommitted?.(freshBarges);
     }
   };
