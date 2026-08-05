@@ -1834,8 +1834,8 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
       );
     }
     if (validSources.length) {
-      onImport(barge.no, validSources);
-      onDataCommitted?.();
+      const freshBarges = onImport(barge.no, validSources);
+      onDataCommitted?.(freshBarges);
     }
   };
 
@@ -4286,11 +4286,16 @@ export default function IntegraDashboard() {
 
   // Fires after a discrete, deliberate data change (Excel/CSV import onto a barge) —
   // deliberately NOT wired into every inline edit (typing a quantity, renaming a barge),
-  // since those fire on every keystroke and would hammer the Sheets API. A short debounce
-  // lets React finish committing the state update first, so the write reads fresh data
-  // rather than a stale pre-update snapshot.
-  const onDataCommitted = () => {
-    setTimeout(() => { writeDomesToSheets(); writeBargesToSheets(); }, 500);
+  // since those fire on every keystroke and would hammer the Sheets API.
+  //
+  // Accepts an optional freshBarges array from the caller. This matters: this function's
+  // own `barges` closure is fixed at the moment it's called, and setBarges (called just
+  // before this, synchronously) doesn't apply until the next render — so without an
+  // explicit override, writeBargesToSheets() would silently push the PRE-import data to
+  // Sheets. That's exactly what caused barge Excel imports to appear to work locally but
+  // never actually reach Sheets, then get overwritten by stale data on the next sync.
+  const onDataCommitted = (freshBarges) => {
+    setTimeout(() => { writeDomesToSheets(); writeBargesToSheets(freshBarges); }, 500);
   };
 
   const handleLoadingReportParsed = (parsedData) => {
@@ -4776,7 +4781,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
   };
 
   const onUpdate = (no, sources, patch) => {
-    setBarges((prev) => prev.map((b) => {
+    const updated = barges.map((b) => {
       if (b.no !== no) return b;
       const next = { ...b, ...(patch || {}) };
       if (sources) {
@@ -4787,7 +4792,11 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
         next.status = statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance);
       }
       return next;
-    }));
+    });
+    setBarges(updated);
+    return updated; // callers (like the Excel import path) need this to push the CORRECT
+    // fresh data to Sheets — reading `barges` state right after calling this would still
+    // be the pre-update value, since setState doesn't apply synchronously.
   };
 
   const removeBarge = (no) => setBarges((prev) => prev.filter((b) => b.no !== no));
