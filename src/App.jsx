@@ -3201,7 +3201,9 @@ export default function IntegraDashboard() {
   const domesByIdTop = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
   const [showImport, setShowImport] = useState(false);
   const [importDate, setImportDate] = useState(() => new Date().toISOString().split("T")[0]);
-  const [dataLastUpdated, setDataLastUpdated] = useState(DATA_LAST_UPDATED);
+  const [dataLastUpdated, setDataLastUpdated] = useState(() => {
+    try { return localStorage.getItem("integraDataLastUpdated") || DATA_LAST_UPDATED; } catch (e) { return DATA_LAST_UPDATED; }
+  });
   const [importStatus, setImportStatus] = useState("");
 
   useEffect(() => {
@@ -3816,7 +3818,9 @@ export default function IntegraDashboard() {
   // browser updates that date for everyone, not just locally for whoever did the import.
   const writeMetaToSheets = async (updates) => {
     const rows = toRows(["Key", "Value"], Object.entries(updates).map(([k, v]) => [k, v]));
-    return writeToSheets("Meta", rows);
+    const ok = await writeToSheets("Meta", rows);
+    if (!ok) setLastSyncError('Meta: write failed — check that a "Meta" tab exists in your Sheet with "Key"/"Value" column headers.');
+    return ok;
   };
   const fetchMetaFromSheets = async () => {
     try {
@@ -3824,10 +3828,14 @@ export default function IntegraDashboard() {
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       const row = data.find((r) => r["Key"] === "DataLastUpdated");
-      if (row?.Value) setDataLastUpdated(row.Value);
+      if (row?.Value) {
+        setDataLastUpdated(row.Value);
+        localStorage.setItem("integraDataLastUpdated", row.Value); // local fallback if Sheets read ever fails later
+      }
       return true;
     } catch (error) {
       console.error("Error fetching Meta from Sheets:", error);
+      setLastSyncError(`Meta: ${error.message} — check that a "Meta" tab exists in your Sheet with "Key"/"Value" column headers.`);
       return null; // best-effort — falls back to whatever's already in state/localStorage
     }
   };
@@ -4167,6 +4175,7 @@ export default function IntegraDashboard() {
           });
           setBarges(updatedBarges);
           setDataLastUpdated(importDate);
+          try { localStorage.setItem("integraDataLastUpdated", importDate); } catch (e) {}
           // Push straight to Sheets, same as the loading-report chat assistant does —
           // previously this only updated local state, so the import looked like it
           // worked but silently never reached Sheets. The next sync (or the next
@@ -4351,8 +4360,9 @@ export default function IntegraDashboard() {
           <div>
             <div className="brand-name">INTEGRA</div>
             <div className="brand-sub">Nickel Ore Barging Plan · 2026</div>
-            <div className="data-updated-badge" title="Last time stock/barge Excel data was updated">
+            <div className="data-updated-badge" title={lastSyncError?.startsWith("Meta") ? lastSyncError : "Last time stock/barge Excel data was updated"}>
               <Calendar size={11} /> Data updated {fmtShortDate(dataLastUpdated)}
+              {lastSyncError?.startsWith("Meta") && <span className="data-updated-warn"> ⚠ sync issue — see Settings</span>}
             </div>
           </div>
         </div>
@@ -4654,8 +4664,9 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .brand-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px; letter-spacing: .04em; }
 .brand-sub { font-size: 11px; color: #8A97A8; margin-top: 1px; }
 .data-updated-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: #667080;
-  margin-top: 4px; font-family: 'JetBrains Mono', monospace; }
+  margin-top: 4px; font-family: 'JetBrains Mono', monospace; flex-wrap: wrap; }
 .data-updated-badge svg { color: #E35F0C; opacity: .8; }
+.data-updated-warn { color: #FBBF24; font-weight: 600; }
 
 .nav-desktop-wrapper { display: flex; align-items: center; gap: 10px; }
 .nav-desktop { display: flex; gap: 4px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); padding: 4px; border-radius: 14px; }
