@@ -1517,7 +1517,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
   };
 
   return (
-    <div className={`barge-row glass ${barge.finalized ? "barge-final" : ""}`}>
+    <div className={`barge-row glass ${barge.finalized ? "barge-final" : ""} ${open ? "barge-row-open" : ""}`}>
       <div className="barge-row-top" onClick={() => setOpen(!open)}>
         <div className="barge-row-left">
           <ChevronDown size={16} className={`chevron ${open ? "chevron-open" : ""}`} />
@@ -1610,6 +1610,11 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
           )}
 
           <div className="barge-row-actions">
+            {!barge.finalized && (
+              <button className="btn-status" onClick={() => { onDataCommitted?.(); alert(`✅ Barge #${barge.no} composition pushed to Sheets.`); }}>
+                <RefreshCw size={13} /> Update Barge
+              </button>
+            )}
             {isFeatureEnabled("Barging_FinalizeBarges", true) && (
               <button className={`btn-toggle ${barge.finalized ? "btn-toggle-on" : ""}`} onClick={() => onFinalize(barge.no)}>
                 {barge.finalized ? <><Unlock size={13} /> Reopen</> : <><Lock size={13} /> Finalize</>}
@@ -1688,24 +1693,35 @@ function TimelineTab({ barges, settings, isDevAccount }) {
           </div>
 
           <div className="loading-barge-list">
-            {loadingBarges.map((b) => (
-              <div key={b.no} className="loading-barge-row">
-                <div className="loading-barge-head">
-                  <span className="tracker-no">#{String(b.no).padStart(2, "0")}</span>
-                  <span className={`loading-status-badge ${b.loadingStatus === "loaded" ? "loading-status-done" : "loading-status-active"}`}>
-                    {b.loadingStatus === "loaded" ? "Loaded" : "Loading"}
-                  </span>
-                  <span className="loading-barge-updated">Updated {b.lastUpdated || "—"}</span>
+            {loadingBarges.map((b) => {
+              const isComplete = b.loadingStatus === "loaded" || (b.progressPercent || 0) >= 100;
+              return (
+                <div key={b.no} className="loading-barge-row">
+                  <div className="loading-barge-head">
+                    <span className="tracker-no">#{String(b.no).padStart(2, "0")}</span>
+                    <span className={`loading-status-badge ${isComplete ? "loading-status-done" : "loading-status-active"}`}>
+                      {isComplete ? "Loaded" : "Loading"}
+                    </span>
+                    <span className="loading-barge-updated">Updated {b.lastUpdated || "—"}</span>
+                  </div>
+                  {isComplete ? (
+                    <div className="loading-complete-msg">
+                      <CheckCircle2 size={14} /> Barge #{String(b.no).padStart(2, "0")} cargo loaded successfully — {fmt(b.totalWMT)} WMT on board.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="loading-bar-track loading-bar-track-sm">
+                        <div className="loading-bar-fill" style={{ width: `${Math.min(100, b.progressPercent || 0)}%` }} />
+                      </div>
+                      <div className="loading-barge-meta">
+                        <span>{fmt(b.qtyOnBoard)} / {fmt(b.totalWMT)} WMT ({fmt(b.progressPercent, 0)}%)</span>
+                        <span>Balance: {fmt(b.balanceDue)} WMT</span>
+                      </div>
+                    </>
+                  )}
                 </div>
-                <div className="loading-bar-track loading-bar-track-sm">
-                  <div className="loading-bar-fill" style={{ width: `${Math.min(100, b.progressPercent || 0)}%` }} />
-                </div>
-                <div className="loading-barge-meta">
-                  <span>{fmt(b.qtyOnBoard)} / {fmt(b.totalWMT)} WMT ({fmt(b.progressPercent, 0)}%)</span>
-                  <span>Balance: {fmt(b.balanceDue)} WMT</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}
@@ -2150,7 +2166,7 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                 <h4>Status: {sheetsSyncStatus}</h4>
                 <p>
                   {lastSyncTime ? `Last synced ${lastSyncTime.toLocaleString()}` : "Not synced yet this session"} — pulls Domes, Barges,
-                  HPM, and Exchange Rates from your Google Sheet automatically for every logged-in user. Runs on login, every 5 minutes,
+                  HPM, and Exchange Rates from your Google Sheet automatically for every logged-in user. Runs on login, every 15 minutes,
                   and immediately whenever you switch back to this tab — no manual step needed. Finalizing/reopening a barge and Excel
                   imports also push changes back to Sheets automatically.
                 </p>
@@ -3296,13 +3312,13 @@ export default function IntegraDashboard() {
 
   // Pull fresh data from Google Sheets on login (every user — this used to be
   // admin-only, which meant operation accounts never saw anything an admin pushed;
-  // permanently stuck on stale/default data). Re-checks every 5 minutes while the tab
+  // permanently stuck on stale/default data). Re-checks every 15 minutes while the tab
   // stays open, and immediately whenever the tab becomes visible again (switching back
   // from another app/tab) — there's no manual "Sync Now" button, so this is what keeps
   // everyone actually looking at the same data instead of whatever loaded at login.
   useEffect(() => {
     if (!isLoggedIn) return;
-    syncWithSheets(false);
+    syncWithSheets(true); // always sync on login, regardless of a previous session's timestamp
     const syncInterval = setInterval(() => syncWithSheets(false), 15 * 60 * 1000);
     const onVisible = () => { if (document.visibilityState === "visible") syncWithSheets(false); };
     document.addEventListener("visibilitychange", onVisible);
@@ -4939,7 +4955,8 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .empty-state { padding: 40px 20px; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #8A97A8; font-size: 13px; text-align: center; }
 
 .barge-list { display: flex; flex-direction: column; gap: 8px; }
-.barge-row { padding: 0; }
+.barge-row { padding: 0; position: relative; }
+.barge-row-open { z-index: 30; }
 .barge-final { border-color: rgba(74,222,128,.35); }
 .barge-row-top { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; flex-wrap: wrap; }
 .barge-row-left { display: flex; align-items: center; gap: 8px; min-width: 120px; }
@@ -5460,6 +5477,8 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .loading-barge-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
 .loading-barge-updated { margin-left: auto; font-size: 10.5px; color: #8A97A8; }
 .loading-barge-meta { display: flex; justify-content: space-between; font-size: 11px; color: #B7C0CC; font-family: 'JetBrains Mono', monospace; margin-top: 4px; }
+.loading-complete-msg { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 8px 10px;
+  background: rgba(74,222,128,.08); border: 1px solid rgba(74,222,128,.2); border-radius: 8px; color: #4ADE80; font-size: 12px; font-weight: 600; }
 .loading-status-badge { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
 .loading-status-active { background: rgba(251,191,36,.18); color: #FBBF24; }
 .loading-status-done { background: rgba(74,222,128,.18); color: #4ADE80; }
