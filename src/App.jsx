@@ -2828,7 +2828,13 @@ function WelcomeScreen({ username, role }) {
  * completes, since there's no hardcoded fallback data anymore. Prevents
  * ever showing an empty or stale-looking dashboard while data loads.
  * ============================================================ */
-function SyncingScreen({ syncFailed, syncError }) {
+function SyncingScreen({ syncFailed, syncError, progress, onSkip }) {
+  const [showSkip, setShowSkip] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setShowSkip(true), 15000);
+    return () => clearTimeout(t);
+  }, []);
+
   return (
     <div className="welcome-overlay">
       <div className="bg-glow bg-glow-a" />
@@ -2843,8 +2849,13 @@ function SyncingScreen({ syncFailed, syncError }) {
         ) : (
           <>
             <h1 className="welcome-title">Loading data…</h1>
-            <p className="welcome-subtitle">Pulling the latest Domes, Barges, HPM, and Exchange Rates from Google Sheets.</p>
+            <p className="welcome-subtitle">{progress || "Pulling the latest Domes, Barges, HPM, and Exchange Rates from Google Sheets."}</p>
             <div className="welcome-spinner"></div>
+            {showSkip && (
+              <button className="btn-ghost" style={{ marginTop: 20 }} onClick={onSkip}>
+                Taking longer than expected — continue waiting in the background
+              </button>
+            )}
           </>
         )}
       </div>
@@ -3181,6 +3192,8 @@ export default function IntegraDashboard() {
   const [hpmHistory, setHpmHistory] = useState(DEFAULT_HPM_HISTORY);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [sheetsSyncStatus, setSheetsSyncStatus] = useState("Ready");
+  const [syncProgress, setSyncProgress] = useState("");
+  const [syncSkipped, setSyncSkipped] = useState(false);
   const [lastSyncError, setLastSyncError] = useState("");
   const [exRateFetchStatus, setExRateFetchStatus] = useState("Not checked yet this session");
 
@@ -3955,18 +3968,33 @@ export default function IntegraDashboard() {
     const minutesSinceSync = lastSync ? (Date.now() - lastSync.getTime()) / 1000 / 60 : 999;
     if (!force && minutesSinceSync < 15) return;
 
+    // Granular timing so a slow sync is actually diagnosable instead of a black box —
+    // check the browser console (F12 -> Console) during a slow load and every step's
+    // real duration will be logged, which tells us definitively whether this is Domes,
+    // Barges, or the HPM/Rate/Meta batch that's actually slow, rather than guessing.
+    const t0 = performance.now();
+    const lap = (label) => console.log(`[sync] ${label}: ${((performance.now() - t0) / 1000).toFixed(1)}s elapsed`);
+
     setSheetsSyncStatus("Syncing…");
     setLastSyncError("");
+    setSyncProgress("Connecting to Google Sheets…");
+    setSyncProgress("Fetching Domes…");
     const freshDomes = await fetchDomesFromSheets();
+    lap("Domes fetched");
+    setSyncProgress("Fetching Barges…");
     const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
+    lap("Barges fetched");
     // HPM, Exchange Rate, and Meta don't depend on Domes/Barges or on each other — no
     // reason to wait for them one at a time. Running them together cuts real loading
     // time roughly in half to a third versus the previous sequential chain.
+    setSyncProgress("Fetching HPM, Exchange Rates, and Meta…");
     const [freshHpm, freshExRate] = await Promise.all([
       fetchHpmFromSheets(),
       fetchExchangeRateFromSheets(),
       fetchMetaFromSheets(), // best-effort, for everyone — the "Data updated" badge is visible to all roles
     ]);
+    lap("HPM/ExRate/Meta fetched");
+    setSyncProgress("");
 
     // Reconcile stock against actual finalized-barge consumption rather than trusting
     // whatever the Sheet's "Stock (WMT)" column says — see reconcileStock's comment for
@@ -4239,12 +4267,12 @@ export default function IntegraDashboard() {
       </>
     );
   }
-  if (domes.length === 0 && !lastSyncTime) {
+  if (domes.length === 0 && !lastSyncTime && !syncSkipped) {
     const failed = sheetsSyncStatus.startsWith("❌");
     return (
       <>
         <style>{CSS}</style>
-        <SyncingScreen syncFailed={failed} syncError={failed ? lastSyncError : null} />
+        <SyncingScreen syncFailed={failed} syncError={failed ? lastSyncError : null} progress={syncProgress} onSkip={() => setSyncSkipped(true)} />
       </>
     );
   }
