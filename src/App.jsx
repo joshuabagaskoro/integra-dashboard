@@ -3939,20 +3939,33 @@ export default function IntegraDashboard() {
     setLastSyncError("");
     const freshDomes = await fetchDomesFromSheets();
     const freshBarges = freshDomes ? await fetchBargesFromSheets(freshDomes) : null;
-    const freshHpm = await fetchHpmFromSheets();
-    const freshExRate = await fetchExchangeRateFromSheets();
-    fetchMetaFromSheets(); // best-effort, for everyone — the "Data updated" badge is visible to all roles
+    // HPM, Exchange Rate, and Meta don't depend on Domes/Barges or on each other — no
+    // reason to wait for them one at a time. Running them together cuts real loading
+    // time roughly in half to a third versus the previous sequential chain.
+    const [freshHpm, freshExRate] = await Promise.all([
+      fetchHpmFromSheets(),
+      fetchExchangeRateFromSheets(),
+      fetchMetaFromSheets(), // best-effort, for everyone — the "Data updated" badge is visible to all roles
+    ]);
 
     // Reconcile stock against actual finalized-barge consumption rather than trusting
     // whatever the Sheet's "Stock (WMT)" column says — see reconcileStock's comment for
     // why this matters. Only "Initial Stock (WMT)" is treated as ground truth here.
+    //
+    // IMPORTANT: this only corrects the LOCAL view — it deliberately no longer writes
+    // the correction back to Sheets automatically. That auto-write was the actual cause
+    // of stock silently reverting to older values: every logged-in browser reconciles
+    // independently every ~15 minutes, and if two people's browsers wrote back around
+    // the same time, whichever finished last would overwrite the other's — a classic
+    // last-write-wins collision, with no relation to anyone actually importing anything.
+    // The correction still applies every sync regardless, since nothing trusts the raw
+    // "Stock" column anymore (only "Initial Stock"), so the Sheet being cosmetically
+    // "wrong" there doesn't affect correctness — only an explicit action (Excel import,
+    // Finalize/Reopen) should ever push data back to Sheets.
     if (freshDomes && freshBarges) {
       const reconciled = freshDomes.map((d) => ({ ...d, ...reconcileStock(d.id, d.initialStock, freshBarges) }));
       const changed = reconciled.some((d, i) => d.stock !== freshDomes[i].stock || d.initialStock !== freshDomes[i].initialStock);
-      if (changed) {
-        setDomes(reconciled);
-        writeDomesToSheets(reconciled); // self-heal the Sheet so next sync doesn't need to re-derive this
-      }
+      if (changed) setDomes(reconciled);
     }
 
     // Feature flags aren't just loaded at login anymore — if dev changes what someone
