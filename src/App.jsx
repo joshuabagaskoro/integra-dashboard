@@ -205,6 +205,26 @@ const fmt = (n, d = 0) => Number(n || 0).toLocaleString("en-US", { minimumFracti
 
 // Ensures every dome carries an immutable initialStock baseline (set once, never decremented).
 // Current .stock decreases as barges finalize; initialStock - stock = stock already barged out.
+// None of this file's ~16 calls to /api/sheets-read, /api/sheets-write, or
+// /api/fetch-exchange-rate had any timeout — if a serverless function ever genuinely
+// hangs (cold start, a stuck upstream Google API call, etc.), fetch() has no ceiling of
+// its own, so the browser falls back to ITS OWN default network timeout, which is often
+// several minutes. That's exactly what a "stuck on Loading data... for 5-10 minutes"
+// report looks like. This wraps fetch with an explicit, short timeout so a hang fails
+// fast and predictably instead of silently eating the browser's full default window.
+async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function withInitialStock(list) {
   return list.map((d) => (d.initialStock !== undefined ? d : { ...d, initialStock: d.stock }));
 }
@@ -3323,7 +3343,7 @@ export default function IntegraDashboard() {
     }
 
     try {
-      const response = await fetch("/api/sheets-read?sheetName=Users");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=Users");
       if (!response.ok) { logAttempt("Failed"); setLoginError("❌ Invalid username or password."); return; }
       const { data } = await response.json();
       const user = data.find((u) => u["Username"] === username);
@@ -3400,7 +3420,7 @@ export default function IntegraDashboard() {
     try {
       const today = new Date().toISOString().split("T")[0];
       if (localStorage.getItem("lastExRateFetch") === today) return;
-      const res = await fetch("/api/fetch-exchange-rate");
+      const res = await fetchWithTimeout("/api/fetch-exchange-rate");
       if (!res.ok) throw new Error(await extractErrorDetail(res));
       const data = await res.json();
       if (!data.rate) throw new Error("Response missing rate field");
@@ -3588,7 +3608,7 @@ export default function IntegraDashboard() {
 
   const fetchDomesFromSheets = async () => {
     try {
-      const response = await fetch("/api/sheets-read?sheetName=Domes");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=Domes");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("Domes tab returned 0 rows — check the tab name and that it has data below the header row."); return null; }
@@ -3604,7 +3624,7 @@ export default function IntegraDashboard() {
 
   const fetchBargesFromSheets = async (freshDomes) => {
     try {
-      const response = await fetch("/api/sheets-read?sheetName=Barges");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=Barges");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("Barges tab returned 0 rows — check the tab name and that it has data below the header row."); return null; }
@@ -3623,7 +3643,7 @@ export default function IntegraDashboard() {
       // The Sheet tab is still named "HMAHistory" from before the dashboard renamed
       // HMA to HPM internally — targeting that exact tab name rather than asking for
       // the Sheet to be renamed.
-      const response = await fetch("/api/sheets-read?sheetName=HMAHistory");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=HMAHistory");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("HMAHistory tab returned 0 rows — check the tab has data below the header row."); return null; }
@@ -3648,7 +3668,7 @@ export default function IntegraDashboard() {
 
   const fetchExchangeRateFromSheets = async () => {
     try {
-      const response = await fetch("/api/sheets-read?sheetName=ExchangeRates");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=ExchangeRates");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("ExchangeRates tab returned 0 rows — check the tab has data below the header row."); return null; }
@@ -3669,7 +3689,7 @@ export default function IntegraDashboard() {
 
   const writeToSheets = async (sheetName, rows) => {
     try {
-      const response = await fetch("/api/sheets-write", {
+      const response = await fetchWithTimeout("/api/sheets-write", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sheetName, data: rows }),
@@ -3722,7 +3742,7 @@ export default function IntegraDashboard() {
   // is fail-open). ----
   const loadUserFeaturesFromSheets = async (username) => {
     try {
-      const response = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=FeatureFlags");
       if (!response.ok) return; // keep the fail-open defaults
       const { data } = await response.json();
       const userConfig = data.find((row) => row["Username"] === username);
@@ -3743,9 +3763,9 @@ export default function IntegraDashboard() {
 
   const loadAllUsersAndFlags = async () => {
     try {
-      const usersRes = await fetch("/api/sheets-read?sheetName=Users");
+      const usersRes = await fetchWithTimeout("/api/sheets-read?sheetName=Users");
       if (usersRes.ok) { const { data } = await usersRes.json(); setAllUsers(data); }
-      const flagsRes = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      const flagsRes = await fetchWithTimeout("/api/sheets-read?sheetName=FeatureFlags");
       if (flagsRes.ok) {
         const { data } = await flagsRes.json();
         const flagsObj = {};
@@ -3788,7 +3808,7 @@ export default function IntegraDashboard() {
   };
   const fetchLoginHistoryFromSheets = async () => {
     try {
-      const response = await fetch("/api/sheets-read?sheetName=LoginHistory");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=LoginHistory");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       const transformed = data
@@ -3815,7 +3835,7 @@ export default function IntegraDashboard() {
   };
   const fetchMetaFromSheets = async () => {
     try {
-      const response = await fetch("/api/sheets-read?sheetName=Meta");
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=Meta");
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       const row = data.find((r) => r["Key"] === "DataLastUpdated");
@@ -3850,7 +3870,7 @@ export default function IntegraDashboard() {
 
   const loadUserDetailedFeatures = async (username) => {
     try {
-      const detailedRes = await fetch("/api/sheets-read?sheetName=FeatureFlagsDetailed");
+      const detailedRes = await fetchWithTimeout("/api/sheets-read?sheetName=FeatureFlagsDetailed");
       if (detailedRes.ok) {
         const { data } = await detailedRes.json();
         const userConfig = data.find((row) => row["Username"] === username);
@@ -3859,7 +3879,7 @@ export default function IntegraDashboard() {
       // No detailed row for this user — derive detailed flags from their tab-level
       // flags instead of silently defaulting to something disconnected from what
       // they already have.
-      const tabRes = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      const tabRes = await fetchWithTimeout("/api/sheets-read?sheetName=FeatureFlags");
       if (!tabRes.ok) return;
       const { data } = await tabRes.json();
       const userConfig = data.find((row) => row["Username"] === username);
@@ -3871,7 +3891,7 @@ export default function IntegraDashboard() {
 
   const loadAllDetailedFlags = async () => {
     try {
-      const detailedRes = await fetch("/api/sheets-read?sheetName=FeatureFlagsDetailed");
+      const detailedRes = await fetchWithTimeout("/api/sheets-read?sheetName=FeatureFlagsDetailed");
       if (detailedRes.ok) {
         const { data } = await detailedRes.json();
         const flagsObj = {};
@@ -3879,7 +3899,7 @@ export default function IntegraDashboard() {
         setAllDetailedFlags(flagsObj);
         return;
       }
-      const tabRes = await fetch("/api/sheets-read?sheetName=FeatureFlags");
+      const tabRes = await fetchWithTimeout("/api/sheets-read?sheetName=FeatureFlags");
       if (!tabRes.ok) return;
       const { data } = await tabRes.json();
       const flagsObj = {};
