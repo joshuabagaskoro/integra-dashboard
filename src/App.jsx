@@ -144,15 +144,11 @@ const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 // figure Integra is actually given each period — no formula calculation. Deliberately
 // simpler than deriving HPM from HMA + Corrective Factors: the person confirmed this is
 // the workflow they want.
-const DEFAULT_HPM_HISTORY = [
-  { date: "2026-07-15", price: 53.60, unit: "USD/WMT" },
-  { date: "2026-07-01", price: 56.58, unit: "USD/WMT" },
-  { date: "2026-06-15", price: 59.52, unit: "USD/WMT" },
-];
-const DEFAULT_EXCHANGE_RATE_HISTORY = [
-  { date: "2026-07-29", rate: 17990, source: "Market mid-rate (Yahoo Finance / Pluang), verified via search" },
-  { date: "2026-07-28", rate: 18010, source: "Market mid-rate (Yahoo Finance / Pluang), verified via search" },
-];
+// Same principle as Domes/Barges above: no hardcoded seed data, Sheets only. These two
+// were missed in that earlier cleanup — worth flagging that they existed at all, since
+// stale numbers here would have looked like real market data rather than obviously wrong.
+const DEFAULT_HPM_HISTORY = [];
+const DEFAULT_EXCHANGE_RATE_HISTORY = [];
 const ROYALTY_TARIFF = 0.15; // flat 15% — see build note about bracket-based tariffs
 
 const PALETTE = [
@@ -184,11 +180,6 @@ const SITE_POINTS = [
   { name: "JETTY", lat: -4.4544005, lng: 122.4921219, isJetty: true },
 ];
 
-/* ----------------------------- embedded site data -----------------------------
- * Imported from INTEGRA_Google_Sheets_Template (Dome Inventory Existing +
- * Dome Production IMN-1..4), as of 27 July 2026. Replace via the Import button
- * once fresher data is exported from Google Sheets.
- */
 // Sheets is now the single source of truth for domes and barges — no hardcoded
 // snapshot baked into the app anymore. Every previous update required editing this
 // file directly, which meant the embedded data went stale the moment ANYTHING
@@ -3376,7 +3367,7 @@ export default function IntegraDashboard() {
   const getExchangeRateOnDate = (targetDate) => {
     const sorted = [...exchangeRateHistory].sort((a, b) => new Date(b.date) - new Date(a.date));
     const match = sorted.find((h) => new Date(h.date) <= new Date(targetDate));
-    return match ? match.rate : sorted[sorted.length - 1]?.rate || 17990;
+    return match ? match.rate : sorted[sorted.length - 1]?.rate || 0;
   };
 
   const calculateRoyalty = (bargeDate, qty) => {
