@@ -131,6 +131,7 @@ const WIRED_SUBFEATURES = new Set([
   "Barging_CreateManual",
   "Barging_CreateExcel",
   "Barging_FinalizeBarges",
+  "Timeline_LoadingProgress",
 ]);
 
 const CREDENTIALS = {
@@ -538,20 +539,32 @@ const cleanEuroNum = (v) => parseFloat(String(v ?? "").trim().replace(",", "."))
 
 function parseDomeCSV(csv, source, forcedContractor) {
   const rows = Papa.parse(csv, { skipEmptyLines: true, delimiter: ";" }).data;
-  if (!rows.length) return [];
-  const out = [];
+  if (!rows.length) return { domes: [], duplicateIds: [] };
+  const byId = new Map(); // preserves insertion order, later duplicates overwrite earlier ones
   for (let i = 1; i < rows.length; i++) {
-    const [domeId, cid, stock, ni, fe, co, sio2, mgo, al2o3, simg, loc] = rows[i];
-    if (!domeId) continue;
-    out.push({
+    const [rawDomeId, cid, stock, ni, fe, co, sio2, mgo, al2o3, simg, loc] = rows[i];
+    if (!rawDomeId) continue;
+    // Source files have shown trailing punctuation/whitespace inconsistencies (e.g.
+    // "ID.003/BLOK.U/IMN 03/2026." with a stray trailing period) that would otherwise
+    // create a near-duplicate dome distinct from the real one by exact string match.
+    const domeId = String(rawDomeId).trim().replace(/\.+$/, "");
+    if (byId.has(domeId)) byId.get(domeId)._dupCount = (byId.get(domeId)._dupCount || 1) + 1;
+    byId.set(domeId, {
       id: domeId, contractor: forcedContractor || cid || "UNKNOWN",
       stock: cleanEuroNum(stock), ni: cleanEuroNum(ni), fe: cleanEuroNum(fe),
       co: cleanEuroNum(co), sio2: cleanEuroNum(sio2), mgo: cleanEuroNum(mgo),
       al2o3: cleanEuroNum(al2o3), simg: cleanEuroNum(simg), location: loc || "",
-      source,
+      source, _dupCount: byId.has(domeId) ? (byId.get(domeId)._dupCount || 1) : undefined,
     });
   }
-  return out;
+  const domes = [];
+  const duplicateIds = [];
+  byId.forEach((d) => {
+    if (d._dupCount) duplicateIds.push(`${d.id} (${d._dupCount}x)`);
+    delete d._dupCount;
+    domes.push(d);
+  });
+  return { domes, duplicateIds };
 }
 
 // Reads a simple 2-column barge composition file: Dome ID, WMT (xlsx or csv)
@@ -1640,7 +1653,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
 
 /* ----------------------------- Timeline tab ----------------------------- */
 
-function TimelineTab({ barges, settings, isDevAccount }) {
+function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled }) {
   const [hoveredMonth, setHoveredMonth] = useState(null);
   const monthCounts = useMemo(() => {
     const arr = MONTHS.map(() => ({ final: 0, draft: 0, finalWMT: 0, draftWMT: 0 }));
@@ -1662,10 +1675,18 @@ function TimelineTab({ barges, settings, isDevAccount }) {
   // Barges that have been through the Loading Report tracker at least once — a barge
   // with no report yet simply won't have these fields, so this naturally only includes
   // barges someone has actually reported progress for.
-  const loadingBarges = useMemo(() => barges.filter((b) => b.progressPercent !== undefined).sort((a, b) => a.no - b.no), [barges]);
-  const totalQtyOnBoard = loadingBarges.reduce((s, b) => s + (b.qtyOnBoard || 0), 0);
-  const totalLoadingCapacity = loadingBarges.reduce((s, b) => s + (b.totalWMT || 0), 0);
-  const overallLoadingPct = totalLoadingCapacity > 0 ? (totalQtyOnBoard / totalLoadingCapacity) * 100 : 0;
+  const allLoadingBarges = useMemo(() => barges.filter((b) => b.progressPercent !== undefined).sort((a, b) => a.no - b.no), [barges]);
+  const [dismissedLoading, setDismissedLoading] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("dismissedLoadingBarges") || "[]")); } catch (e) { return new Set(); }
+  });
+  const dismissLoadingBarge = (no) => {
+    const next = new Set(dismissedLoading); next.add(no);
+    setDismissedLoading(next);
+    try { localStorage.setItem("dismissedLoadingBarges", JSON.stringify([...next])); } catch (e) {}
+  };
+  const loadingBarges = allLoadingBarges.filter((b) => !dismissedLoading.has(b.no));
+  const activeCount = loadingBarges.filter((b) => b.loadingStatus !== "loaded" && (b.progressPercent || 0) < 100).length;
+  const completeCount = loadingBarges.length - activeCount;
 
   return (
     <div className="stack">
@@ -1676,20 +1697,18 @@ function TimelineTab({ barges, settings, isDevAccount }) {
         <Kpi label="Required pace" value={fmt(remaining / monthsLeft, 1)} unit="barges/mo" />
       </section>
 
-      {isDevAccount && loadingBarges.length > 0 && (
+      {isFeatureEnabled("Timeline_LoadingProgress", true) && loadingBarges.length > 0 && (
         <section className="glass panel">
           <div className="panel-head"><MessageSquare size={16} /><span>Loading Progress</span></div>
-          <div className="loading-overall">
-            <div className="loading-overall-numbers">
-              <span className="loading-overall-value">{fmt(totalQtyOnBoard)}</span>
-              <span className="loading-overall-sep">/</span>
-              <span className="loading-overall-total">{fmt(totalLoadingCapacity)} WMT</span>
-              <span className="loading-overall-pct">{fmt(overallLoadingPct, 1)}%</span>
-            </div>
-            <div className="loading-bar-track">
-              <div className="loading-bar-fill" style={{ width: `${Math.min(100, overallLoadingPct)}%` }} />
-            </div>
-            <div className="note" style={{ marginTop: 8 }}>Across {loadingBarges.length} barge{loadingBarges.length !== 1 ? "s" : ""} with a loading report on file.</div>
+          {/* Each barge's progress is tracked independently — there's no shared/reset
+           * concept between barges. Deliberately not showing a single blended percentage
+           * across barges anymore: mixing a barge that's 100% done with one that's 20%
+           * loading into one number was more confusing than useful. A simple count is
+           * clearer at a glance; the real detail lives in the per-barge cards below. */}
+          <div className="note" style={{ marginBottom: 14 }}>
+            {activeCount > 0 && `${activeCount} barge${activeCount !== 1 ? "s" : ""} currently loading`}
+            {activeCount > 0 && completeCount > 0 && ", "}
+            {completeCount > 0 && `${completeCount} completed`}
           </div>
 
           <div className="loading-barge-list">
@@ -1703,6 +1722,11 @@ function TimelineTab({ barges, settings, isDevAccount }) {
                       {isComplete ? "Loaded" : "Loading"}
                     </span>
                     <span className="loading-barge-updated">Updated {b.lastUpdated || "—"}</span>
+                    {isComplete && (
+                      <button className="loading-dismiss-btn" onClick={() => dismissLoadingBarge(b.no)} title="Dismiss this notification">
+                        <X size={13} />
+                      </button>
+                    )}
                   </div>
                   {isComplete ? (
                     <div className="loading-complete-msg">
@@ -1765,7 +1789,7 @@ function TimelineTab({ barges, settings, isDevAccount }) {
               <span className="tracker-month">{b.shipDate}</span>
               <span className="tracker-grade">{b.totalWMT > 0 ? `${fmt(b.grade, 2)}% Ni` : "—"}</span>
               <StatusBadge status={b.status} />
-              {isDevAccount && b.progressPercent !== undefined && (
+              {isFeatureEnabled("Timeline_LoadingProgress", true) && b.progressPercent !== undefined && (
                 <span className={`loading-status-badge ${b.loadingStatus === "loaded" ? "loading-status-done" : "loading-status-active"}`}>
                   {fmt(b.progressPercent, 0)}%
                 </span>
@@ -3641,7 +3665,18 @@ export default function IntegraDashboard() {
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("Domes tab returned 0 rows — check the tab name and that it has data below the header row."); return null; }
-      const transformed = data.map(mapDomeFromSheetRow);
+      // Dedup by normalized ID (trim + strip trailing punctuation) — corrects any
+      // duplicate rows already sitting in the Sheet from before this was caught at
+      // import time. Local-only: doesn't write the correction back to Sheets, same
+      // reasoning as the stock reconciliation above — an explicit action (re-import,
+      // Finalize) is what should push changes, not every background sync.
+      const byId = new Map();
+      data.forEach((row) => {
+        const d = mapDomeFromSheetRow(row);
+        d.id = String(d.id || "").trim().replace(/\.+$/, "");
+        byId.set(d.id, d); // later rows win — same "keep the last occurrence" rule as import
+      });
+      const transformed = [...byId.values()];
       setDomes(transformed);
       return transformed;
     } catch (error) {
@@ -4196,6 +4231,7 @@ export default function IntegraDashboard() {
     if (!files || !files.length) return;
     let merged = [...domes];
     let processed = 0;
+    const allDuplicateWarnings = [];
     Array.from(files).forEach((file) => {
       const reader = new FileReader();
       reader.onload = (evt) => {
@@ -4207,7 +4243,11 @@ export default function IntegraDashboard() {
           else if (name.includes("imn-3")) { source = "production"; forced = "IMN-3"; }
           else if (name.includes("imn-4")) { source = "production"; forced = "IMN-4"; }
           else if (name.includes("production")) { source = "production"; }
-          const rows = parseDomeCSV(evt.target.result, source, forced);
+          const { domes: rows, duplicateIds } = parseDomeCSV(evt.target.result, source, forced);
+          if (duplicateIds.length) {
+            console.warn(`Duplicate Dome IDs in ${file.name} (kept the last occurrence of each):`, duplicateIds);
+            allDuplicateWarnings.push(...duplicateIds.map((d) => `${d} in ${file.name}`));
+          }
           // The imported "stock" figure is treated as INITIAL/gross stock, not current
           // remaining — same rule as manual chat-based stock updates. Net out whatever
           // has already been consumed by FINALIZED barges, clamping to 0 (and bumping
@@ -4255,6 +4295,13 @@ export default function IntegraDashboard() {
             writeMetaToSheets({ DataLastUpdated: importDate });
           }
           setImportStatus(`✓ Imported ${merged.length} domes`);
+          if (allDuplicateWarnings.length) {
+            alert(
+              `⚠️ Found ${allDuplicateWarnings.length} duplicate Dome ID${allDuplicateWarnings.length > 1 ? "s" : ""} within your source file(s) — kept the last row for each and skipped the rest:\n\n` +
+              allDuplicateWarnings.slice(0, 20).join("\n") + (allDuplicateWarnings.length > 20 ? `\n+${allDuplicateWarnings.length - 20} more` : "") +
+              `\n\nWorth checking the original Excel for these rows — they usually mean the same dome got entered twice.`
+            );
+          }
           setTimeout(() => { setShowImport(false); setImportStatus(""); }, 1500);
         }
       };
@@ -4458,7 +4505,7 @@ export default function IntegraDashboard() {
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && userFeatures.stock && <StockTab domes={domes} />}
         {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
-        {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} />}
+        {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} isFeatureEnabled={isFeatureEnabled} />}
         {tab === "financials" && isAdmin && userFeatures.financials && (
           <FinancialsTab
             barges={barges} hpmHistory={hpmHistory} setHpmHistory={setHpmHistory}
@@ -5463,12 +5510,6 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .loading-assistant-btn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(34,211,184,.45); }
 
 /* Loading Progress section (Timeline tab) */
-.loading-overall { margin-bottom: 18px; }
-.loading-overall-numbers { display: flex; align-items: baseline; gap: 6px; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }
-.loading-overall-value { font-size: 22px; font-weight: 700; color: #22D3B8; }
-.loading-overall-sep { color: #667080; font-size: 16px; }
-.loading-overall-total { font-size: 15px; color: #B7C0CC; }
-.loading-overall-pct { margin-left: auto; font-size: 15px; font-weight: 700; color: #EAF0F6; }
 .loading-bar-track { width: 100%; height: 10px; background: rgba(255,255,255,.08); border-radius: 6px; overflow: hidden; }
 .loading-bar-track-sm { height: 6px; margin: 6px 0; }
 .loading-bar-fill { height: 100%; background: linear-gradient(90deg, #22D3B8, #14B8A6); border-radius: 6px; transition: width .3s; }
@@ -5476,6 +5517,9 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .loading-barge-row { padding: 12px 14px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
 .loading-barge-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
 .loading-barge-updated { margin-left: auto; font-size: 10.5px; color: #8A97A8; }
+.loading-dismiss-btn { display: flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); border-radius: 6px; color: #8A97A8; cursor: pointer; flex-shrink: 0; }
+.loading-dismiss-btn:hover { background: rgba(248,113,113,.15); border-color: rgba(248,113,113,.3); color: #F87171; }
 .loading-barge-meta { display: flex; justify-content: space-between; font-size: 11px; color: #B7C0CC; font-family: 'JetBrains Mono', monospace; margin-top: 4px; }
 .loading-complete-msg { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 8px 10px;
   background: rgba(74,222,128,.08); border: 1px solid rgba(74,222,128,.2); border-radius: 8px; color: #4ADE80; font-size: 12px; font-weight: 600; }
@@ -5484,8 +5528,6 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .loading-status-done { background: rgba(74,222,128,.18); color: #4ADE80; }
 
 @media (max-width: 640px) {
-  .loading-overall-numbers { flex-wrap: wrap; }
-  .loading-overall-pct { margin-left: 0; }
   .loading-barge-meta { flex-direction: column; gap: 2px; }
 }
 .review-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 320px)); gap: 14px; margin-bottom: 8px; }
