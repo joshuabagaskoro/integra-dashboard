@@ -600,7 +600,15 @@ function parseBargeComposition(rows) {
     const value = row[1];
     if (value === undefined || value === "") continue;
     if (label.includes("date")) {
-      meta.date = value instanceof Date ? value.toISOString().split("T")[0] : String(value).trim();
+      // Use local calendar date components, not toISOString() — that converts to UTC,
+      // which shifts the date back a full day for timezones ahead of UTC (e.g. WIB,
+      // UTC+7): a Date representing "Aug 10 midnight local" becomes "Aug 9, 17:00 UTC",
+      // so .toISOString() would have silently reported the wrong day for every user in
+      // Indonesia's own timezone.
+      const pad = (n) => String(n).padStart(2, "0");
+      meta.date = value instanceof Date
+        ? `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`
+        : String(value).trim();
     } else if (label.includes("barge") && label.includes("name")) {
       meta.bargeName = String(value).trim();
     } else if (label.includes("tugboat") || (label.includes("tb") && label.includes("name"))) {
@@ -1487,7 +1495,11 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
     } else {
       const reader = new FileReader();
       reader.onload = (evt) => {
-        const wb = XLSX.read(new Uint8Array(evt.target.result), { type: "array" });
+        // cellDates: true is required — without it, SheetJS returns date-formatted
+        // cells as their raw Excel serial number (e.g. 46244) rather than a JS Date
+        // object, which is exactly why the DATE row was showing as a meaningless number
+        // instead of an actual date.
+        const wb = XLSX.read(new Uint8Array(evt.target.result), { type: "array", cellDates: true });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
         const comp = parseBargeComposition(rows);
