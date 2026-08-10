@@ -606,9 +606,23 @@ function parseBargeComposition(rows) {
       // so .toISOString() would have silently reported the wrong day for every user in
       // Indonesia's own timezone.
       const pad = (n) => String(n).padStart(2, "0");
-      meta.date = value instanceof Date
-        ? `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`
-        : String(value).trim();
+      const toDateStr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      if (value instanceof Date) {
+        meta.date = toDateStr(value);
+      } else if (typeof value === "number" && value > 25000 && value < 60000) {
+        // cellDates:true only converts a cell if Excel's own number-format metadata
+        // marks it as a date — if that formatting was lost (e.g. a copy-paste-values
+        // when duplicating this template for a new barge), the cell comes through as a
+        // plain number instead, and without this fallback it would get stringified
+        // as-is ("46244") rather than converted to an actual date. Excel's date epoch
+        // is Dec 30 1899; the range check (~1968-2064) guards against treating a
+        // coincidentally similar-sized WMT or other number as if it were a date.
+        const excelEpoch = new Date(1899, 11, 30);
+        const converted = new Date(excelEpoch.getTime() + value * 86400000);
+        meta.date = toDateStr(converted);
+      } else {
+        meta.date = String(value).trim();
+      }
     } else if (label.includes("barge") && label.includes("name")) {
       meta.bargeName = String(value).trim();
     } else if (label.includes("tugboat") || (label.includes("tb") && label.includes("name"))) {
