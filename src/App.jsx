@@ -3825,10 +3825,11 @@ export default function IntegraDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sheetName, data: rows }),
       });
-      if (!response.ok) throw new Error(`Failed to write ${sheetName} to Sheets`);
+      if (!response.ok) throw new Error(await extractErrorDetail(response));
       return true;
     } catch (error) {
       console.error(`Error writing ${sheetName} to Sheets:`, error);
+      setLastSyncError(`${sheetName} write: ${error.message}`);
       return false;
     }
   };
@@ -3960,9 +3961,7 @@ export default function IntegraDashboard() {
   // browser updates that date for everyone, not just locally for whoever did the import.
   const writeMetaToSheets = async (updates) => {
     const rows = toRows(["Key", "Value"], Object.entries(updates).map(([k, v]) => [k, v]));
-    const ok = await writeToSheets("Meta", rows);
-    if (!ok) setLastSyncError('Meta: write failed — check that a "Meta" tab exists in your Sheet with "Key"/"Value" column headers.');
-    return ok;
+    return writeToSheets("Meta", rows);
   };
   const fetchMetaFromSheets = async () => {
     try {
