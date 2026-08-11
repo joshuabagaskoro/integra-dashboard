@@ -537,12 +537,47 @@ function poolFromDomes(domes, subtractBarges) {
 // truncating every decimal in the file. Convert comma to dot before parsing to fix this.
 const cleanEuroNum = (v) => parseFloat(String(v ?? "").trim().replace(",", ".")) || 0;
 
+// Finds a column by matching whole words in its header, not substrings — critical here
+// because a naive .includes("co") check would incorrectly match "Contractor ID" (which
+// contains "co" as its first two letters) when looking for the "CO %" column. Splitting
+// into whole words first means "contractor" and "co" are treated as distinct tokens.
+function findColByWord(headers, words) {
+  const tokenize = (h) => String(h || "").toLowerCase().replace(/[()%]/g, " ").split(/[\s/]+/).filter(Boolean);
+  return headers.findIndex((h) => {
+    const tokens = tokenize(h);
+    return words.some((w) => tokens.includes(w));
+  });
+}
+
 function parseDomeCSV(csv, source, forcedContractor) {
   const rows = Papa.parse(csv, { skipEmptyLines: true, delimiter: ";" }).data;
   if (!rows.length) return { domes: [], duplicateIds: [] };
+  const headers = rows[0];
+  // Column-order-agnostic: doesn't matter if there's a leading "No" column, extra
+  // "Notes" column, or any other reordering — each field is found by its header text,
+  // not its position. This is what actually fixes imports breaking whenever the source
+  // template's column layout changes (e.g. a "No" row-number column being added).
+  const idx = {
+    domeId: findColByWord(headers, ["dome"]),
+    contractor: findColByWord(headers, ["contractor"]),
+    stock: findColByWord(headers, ["stock"]),
+    ni: findColByWord(headers, ["ni"]),
+    fe: findColByWord(headers, ["fe"]),
+    co: findColByWord(headers, ["co"]),
+    sio2: findColByWord(headers, ["sio2"]),
+    mgo: findColByWord(headers, ["mgo"]),
+    al2o3: findColByWord(headers, ["al2o3"]),
+    simg: findColByWord(headers, ["si", "mg", "simg"]),
+    location: findColByWord(headers, ["location"]),
+  };
+  if (idx.domeId === -1 || idx.stock === -1) {
+    return { domes: [], duplicateIds: [], headerError: `Couldn't find a "Dome ID" and/or "Stock" column in the header row: ${headers.join(", ")}` };
+  }
+
   const byId = new Map(); // preserves insertion order, later duplicates overwrite earlier ones
   for (let i = 1; i < rows.length; i++) {
-    const [rawDomeId, cid, stock, ni, fe, co, sio2, mgo, al2o3, simg, loc] = rows[i];
+    const row = rows[i];
+    const rawDomeId = row[idx.domeId];
     if (!rawDomeId) continue;
     // Source files have shown trailing punctuation/whitespace inconsistencies (e.g.
     // "ID.003/BLOK.U/IMN 03/2026." with a stray trailing period) that would otherwise
@@ -550,10 +585,16 @@ function parseDomeCSV(csv, source, forcedContractor) {
     const domeId = String(rawDomeId).trim().replace(/\.+$/, "");
     if (byId.has(domeId)) byId.get(domeId)._dupCount = (byId.get(domeId)._dupCount || 1) + 1;
     byId.set(domeId, {
-      id: domeId, contractor: forcedContractor || cid || "UNKNOWN",
-      stock: cleanEuroNum(stock), ni: cleanEuroNum(ni), fe: cleanEuroNum(fe),
-      co: cleanEuroNum(co), sio2: cleanEuroNum(sio2), mgo: cleanEuroNum(mgo),
-      al2o3: cleanEuroNum(al2o3), simg: cleanEuroNum(simg), location: loc || "",
+      id: domeId, contractor: forcedContractor || (idx.contractor !== -1 ? row[idx.contractor] : "") || "UNKNOWN",
+      stock: cleanEuroNum(row[idx.stock]),
+      ni: idx.ni !== -1 ? cleanEuroNum(row[idx.ni]) : 0,
+      fe: idx.fe !== -1 ? cleanEuroNum(row[idx.fe]) : 0,
+      co: idx.co !== -1 ? cleanEuroNum(row[idx.co]) : 0,
+      sio2: idx.sio2 !== -1 ? cleanEuroNum(row[idx.sio2]) : 0,
+      mgo: idx.mgo !== -1 ? cleanEuroNum(row[idx.mgo]) : 0,
+      al2o3: idx.al2o3 !== -1 ? cleanEuroNum(row[idx.al2o3]) : 0,
+      simg: idx.simg !== -1 ? cleanEuroNum(row[idx.simg]) : 0,
+      location: (idx.location !== -1 ? row[idx.location] : "") || "",
       source, _dupCount: byId.has(domeId) ? (byId.get(domeId)._dupCount || 1) : undefined,
     });
   }
@@ -1221,7 +1262,7 @@ function StockTab({ domes }) {
           avgNi: data.niWeight > 0 ? data.niSum / data.niWeight : 0,
           unassayedWMT: data.unassayed
         }))
-        .sort((a, b) => b.totalAcquired - a.totalAcquired);
+        .sort((a, b) => a.contractor.localeCompare(b.contractor, undefined, { numeric: true }));
     
     return {
       inventorySummary: formatSummary(bySource.inventory),
@@ -1370,7 +1411,7 @@ function StockTab({ domes }) {
                   </span>
                 </div>
                 {t.actualNi > 0 && (
-                  <div className={`target-ni-badge ${Math.abs(t.niDelta) <= 0.05 ? "ni-badge-good" : "ni-badge-warn"}`}>
+                  <div className={`target-ni-badge ${t.niDelta >= 0 ? "ni-badge-good" : "ni-badge-bad"}`}>
                     {t.niDelta >= 0 ? "+" : ""}{fmt(t.niDelta, 2)}% vs target
                   </div>
                 )}
@@ -4269,7 +4310,8 @@ export default function IntegraDashboard() {
           else if (name.includes("imn-3")) { source = "production"; forced = "IMN-3"; }
           else if (name.includes("imn-4")) { source = "production"; forced = "IMN-4"; }
           else if (name.includes("production")) { source = "production"; }
-          const { domes: rows, duplicateIds } = parseDomeCSV(evt.target.result, source, forced);
+          const { domes: rows, duplicateIds, headerError } = parseDomeCSV(evt.target.result, source, forced);
+          if (headerError) alert(`⚠️ ${file.name}: ${headerError}`);
           if (duplicateIds.length) {
             console.warn(`Duplicate Dome IDs in ${file.name} (kept the last occurrence of each):`, duplicateIds);
             allDuplicateWarnings.push(...duplicateIds.map((d) => `${d} in ${file.name}`));
@@ -5178,6 +5220,7 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .target-ni-badge { align-self: flex-start; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 6px;
   font-family: 'JetBrains Mono', monospace; }
 .ni-badge-good { color: #4ADE80; background: rgba(74,222,128,.12); }
+.ni-badge-bad { color: #F87171; background: rgba(248,113,113,.12); }
 .ni-badge-warn { color: #FBBF24; background: rgba(251,191,36,.12); }
 .target-unassayed-note { font-size: 10px; color: #8A97A8; font-style: italic; }
 
