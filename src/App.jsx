@@ -245,6 +245,23 @@ function withInitialStock(list) {
 // entirely and only ever trusts "Initial Stock (WMT)", deriving current stock fresh
 // every time from real barge consumption. This makes stock tracking self-correcting
 // regardless of how or where the underlying Sheet data got updated.
+// Google Sheets' UNFORMATTED_VALUE read mode (used in sheets-read.js — needed to fix
+// comma-formatted numbers like "10,489" reading as broken text) has a side effect: any
+// cell Sheets has internally typed as a real date returns its raw serial number instead
+// of a formatted string. This happens specifically when someone hand-types a date
+// directly into the Sheet UI (which auto-detects and converts it to a date-typed cell)
+// rather than the app writing it via the API as plain text, which stays plain text. Since
+// rows can be a mix of both depending on how each one got into the sheet, any date field
+// read back needs this same defensive check applied.
+function sheetValueToDateStr(value) {
+  if (typeof value !== "number") return value; // already a string — nothing to convert
+  if (value < 25000 || value > 60000) return value; // outside a plausible date-serial range (~1968-2064), leave as-is
+  const pad = (n) => String(n).padStart(2, "0");
+  const epoch = new Date(1899, 11, 30);
+  const d = new Date(epoch.getTime() + value * 86400000);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function reconcileStock(domeId, grossInitialStock, barges) {
   const used = barges
     .filter((b) => b.finalized)
@@ -3692,7 +3709,7 @@ export default function IntegraDashboard() {
     catch (e) { stockAdjustments = undefined; }
     return {
       no: parseInt(String(row["Barge No"] ?? "").replace(/,/g, "")) || 0,
-      shipDate: row["Ship Date"] || new Date().toISOString().split("T")[0],
+      shipDate: sheetValueToDateStr(row["Ship Date"]) || new Date().toISOString().split("T")[0],
       bargeName: row["Barge Name"] || "", tugboatName: row["Tugboat Name"] || "",
       totalWMT: cleanNum(row["Total WMT"]), grade: cleanNum(row["Grade (Ni %)"]),
       status: row["Status"] || "draft", finalized: row["Finalized"] === "Yes",
@@ -3779,7 +3796,7 @@ export default function IntegraDashboard() {
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("HMAHistory tab returned 0 rows — check the tab has data below the header row."); return null; }
       const transformed = data
-        .map((row) => ({ date: row["Date"], price: cleanNum(row["Price (USD/WMT)"]), unit: "USD/WMT" }))
+        .map((row) => ({ date: sheetValueToDateStr(row["Date"]), price: cleanNum(row["Price (USD/WMT)"]), unit: "USD/WMT" }))
         .filter((h) => h.date)
         .sort((a, b) => new Date(b.date) - new Date(a.date));
       // data.length > 0 but transformed is empty means every row failed the .date check —
@@ -3804,7 +3821,7 @@ export default function IntegraDashboard() {
       const { data } = await response.json();
       if (!data.length) { setLastSyncError("ExchangeRates tab returned 0 rows — check the tab has data below the header row."); return null; }
       const transformed = data
-        .map((row) => ({ date: row["Date"], rate: cleanNum(row["Rate (IDR/USD)"]), source: row["Source"] || "manual" }))
+        .map((row) => ({ date: sheetValueToDateStr(row["Date"]), rate: cleanNum(row["Rate (IDR/USD)"]), source: row["Source"] || "manual" }))
         .filter((e) => e.date)
         .sort((a, b) => new Date(b.date) - new Date(a.date));
       if (!transformed.length) { setLastSyncError('ExchangeRates: 0 usable rows — check row 1 has a column header exactly "Date" (case-sensitive).'); return null; }
@@ -3944,7 +3961,7 @@ export default function IntegraDashboard() {
       if (!response.ok) throw new Error(await extractErrorDetail(response));
       const { data } = await response.json();
       const transformed = data
-        .map((row) => ({ timestamp: row["Timestamp"], username: row["Username"], status: row["Status"] }))
+        .map((row) => ({ timestamp: sheetValueToDateStr(row["Timestamp"]), username: row["Username"], status: row["Status"] }))
         .filter((l) => l.timestamp)
         .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
         .slice(0, 200);
@@ -3970,13 +3987,14 @@ export default function IntegraDashboard() {
       const { data } = await response.json();
       const row = data.find((r) => r["Key"] === "DataLastUpdated");
       if (row?.Value) {
-        setDataLastUpdated(row.Value);
-        localStorage.setItem("integraDataLastUpdated", row.Value); // local fallback if Sheets read ever fails later
+        const value = sheetValueToDateStr(row.Value);
+        setDataLastUpdated(value);
+        localStorage.setItem("integraDataLastUpdated", value); // local fallback if Sheets read ever fails later
       }
       return true;
     } catch (error) {
       console.error("Error fetching Meta from Sheets:", error);
-      setLastSyncError(`Meta: ${error.message} — check that a "Meta" tab exists in your Sheet with "Key"/"Value" column headers.`);
+      setLastSyncError(`Meta: ${error.message}`);
       return null; // best-effort — falls back to whatever's already in state/localStorage
     }
   };
