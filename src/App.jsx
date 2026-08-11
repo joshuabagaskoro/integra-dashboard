@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
   Layers, ChevronDown, Gauge, Upload, X,
-  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw, MessageSquare
+  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw, MessageSquare, Eye, EyeOff
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -151,6 +151,11 @@ const SESSION_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const DEFAULT_HPM_HISTORY = [];
 const DEFAULT_EXCHANGE_RATE_HISTORY = [];
 const ROYALTY_TARIFF = 0.15; // flat 15% — see build note about bracket-based tariffs
+// A dome that's been barged down below this amount is treated as exhausted dregs rather
+// than real usable stock, and hidden from the Stock tab dome list — see filtered's
+// isExhaustedDregs check. Only applies once a dome has actually been barged; a small
+// untouched dome is real inventory, not leftover residue.
+const MIN_USABLE_STOCK_WMT = 50;
 
 const PALETTE = [
   "#22D3B8", "#F5B841", "#9B8CFF", "#FF7A7A", "#60A5FA", "#4ADE80",
@@ -1204,12 +1209,19 @@ function StockTab({ domes }) {
   useEffect(() => { setContractorFilter(null); }, [sourceFilter]);
 
   const filtered = useMemo(() => {
-    let rows = domes.filter((d) =>
-      d.stock > 0 &&
-      (contractorFilter === null || contractorFilter.includes(d.contractor)) &&
-      (sourceFilter === "all" || d.source === sourceFilter) &&
-      (search === "" || d.id.toLowerCase().includes(search.toLowerCase()) || d.contractor.toLowerCase().includes(search.toLowerCase()))
-    );
+    let rows = domes.filter((d) => {
+      const initialStock = d.initialStock !== undefined ? d.initialStock : d.stock;
+      const hasBeenBarged = initialStock > d.stock; // some finalized barge has drawn from this dome
+      // A dome that's been barged down to under 50 WMT is treated as exhausted dregs,
+      // not real usable stock — hidden the same way a dome at exactly 0 already was.
+      // Explicitly does NOT apply to a dome that's never been touched by a barge: a
+      // genuinely small untouched dome is real inventory, not barging leftovers.
+      const isExhaustedDregs = hasBeenBarged && d.stock < MIN_USABLE_STOCK_WMT;
+      return d.stock > 0 && !isExhaustedDregs &&
+        (contractorFilter === null || contractorFilter.includes(d.contractor)) &&
+        (sourceFilter === "all" || d.source === sourceFilter) &&
+        (search === "" || d.id.toLowerCase().includes(search.toLowerCase()) || d.contractor.toLowerCase().includes(search.toLowerCase()));
+    });
     rows = rows.map((d) => {
       const initialStock = d.initialStock !== undefined ? d.initialStock : d.stock;
       return { ...d, initialStock, stockOut: Math.max(0, initialStock - d.stock) };
@@ -2878,6 +2890,7 @@ function BrandMark({ size = 40 }) {
 function LoginScreen({ onLogin, error }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -2913,8 +2926,14 @@ function LoginScreen({ onLogin, error }) {
             </div>
             <div className="form-group">
               <label htmlFor="password">Password</label>
-              <input id="password" type="password" placeholder="Enter your password" value={password}
-                onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" className="login-input" />
+              <div className="password-input-wrap">
+                <input id="password" type={showPassword ? "text" : "password"} placeholder="Enter your password" value={password}
+                  onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" className="login-input" />
+                <button type="button" className="password-toggle-btn" onClick={() => setShowPassword((s) => !s)}
+                  aria-label={showPassword ? "Hide password" : "Show password"} tabIndex={-1}>
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
             </div>
             {error && <div className="login-error">{error}</div>}
             <button type="submit" className="login-button">Sign In</button>
@@ -5469,6 +5488,12 @@ html, body { margin: 0; padding: 0; background: #070A10; }
   padding: 12px 14px; font-size: 14px; color: #EAF0F6; font-family: 'JetBrains Mono', monospace; box-sizing: border-box; }
 .login-input:focus { outline: none; border-color: rgba(227,95,12,.5); box-shadow: 0 0 0 3px rgba(227,95,12,.12); }
 .login-input::placeholder { color: #667080; }
+.password-input-wrap { position: relative; display: flex; }
+.password-input-wrap .login-input { width: 100%; padding-right: 42px; }
+.password-toggle-btn { position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+  background: transparent; border: none; color: #8A97A8; cursor: pointer; border-radius: 6px; }
+.password-toggle-btn:hover { color: #EAF0F6; background: rgba(255,255,255,.06); }
 .login-error { background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.3); border-radius: 8px;
   padding: 10px 12px; color: #FCA5A5; font-size: 12px; font-weight: 500; animation: shake .3s ease-in-out; }
 @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
