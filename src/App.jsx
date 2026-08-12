@@ -16,6 +16,10 @@ const TODAY = new Date();
  * data (stock updates, new barge plans). Do NOT change it for feature/UI/logic edits that
  * don't touch the underlying data — that's the whole point of this timestamp. */
 const DATA_LAST_UPDATED = "2026-08-01";
+// Bumped every time a new version of this file is provided — used purely to detect and
+// notify users running a stale cached session, not for anything functional. Format is
+// free-form as long as it changes; using a date+sequence here for readability.
+const APP_VERSION = "2026-08-11.1";
 
 const DEFAULT_SETTINGS = {
   bargeSize: 10500,
@@ -3371,6 +3375,7 @@ export default function IntegraDashboard() {
   const [dataLastUpdated, setDataLastUpdated] = useState(() => {
     try { return localStorage.getItem("integraDataLastUpdated") || DATA_LAST_UPDATED; } catch (e) { return DATA_LAST_UPDATED; }
   });
+  const [newerVersionAvailable, setNewerVersionAvailable] = useState(null);
   const [importStatus, setImportStatus] = useState("");
 
   useEffect(() => {
@@ -3996,7 +4001,16 @@ export default function IntegraDashboard() {
   // DataLastUpdated (the "Data updated" date badge), so an Excel import from any admin's
   // browser updates that date for everyone, not just locally for whoever did the import.
   const writeMetaToSheets = async (updates) => {
-    const rows = toRows(["Key", "Value"], Object.entries(updates).map(([k, v]) => [k, v]));
+    let existing = {};
+    try {
+      const response = await fetchWithTimeout("/api/sheets-read?sheetName=Meta");
+      if (response.ok) {
+        const { data } = await response.json();
+        data.forEach((row) => { if (row["Key"]) existing[row["Key"]] = row["Value"]; });
+      }
+    } catch (e) { /* best-effort read — if this fails, we fall through to writing just the new keys */ }
+    const merged = { ...existing, ...updates };
+    const rows = toRows(["Key", "Value"], Object.entries(merged).map(([k, v]) => [k, v]));
     return writeToSheets("Meta", rows);
   };
   const fetchMetaFromSheets = async () => {
@@ -4010,12 +4024,28 @@ export default function IntegraDashboard() {
         setDataLastUpdated(value);
         localStorage.setItem("integraDataLastUpdated", value); // local fallback if Sheets read ever fails later
       }
+      // Version awareness: whoever's browser is running the newest deployed code
+      // "advertises" that version to Sheets (see writeAppVersionIfNewer below). If what's
+      // recorded there is newer than what THIS session is actually running, it means a
+      // deploy has gone out since this tab was loaded — most likely caught in a stale
+      // cached bundle, the same class of issue diagnosed a few turns back. Rather than
+      // silently keep running old code, this surfaces it so the person can refresh.
+      const versionRow = data.find((r) => r["Key"] === "LatestKnownVersion");
+      if (versionRow?.Value && versionRow.Value > APP_VERSION) setNewerVersionAvailable(versionRow.Value);
+      else writeAppVersionIfNewer(versionRow?.Value);
       return true;
     } catch (error) {
       console.error("Error fetching Meta from Sheets:", error);
       setLastSyncError(`Meta: ${error.message}`);
       return null; // best-effort — falls back to whatever's already in state/localStorage
     }
+  };
+  // Only writes if THIS session's version is actually newer than what's recorded — avoids
+  // an older cached session overwriting a newer version another user already advertised.
+  const writeAppVersionIfNewer = (recordedVersion) => {
+    if (recordedVersion === APP_VERSION) return;
+    if (recordedVersion && recordedVersion > APP_VERSION) return; // recorded is newer than us — don't downgrade the record
+    writeMetaToSheets({ LatestKnownVersion: APP_VERSION });
   };
 
   // ---- Sub-feature (granular) flags — a finer layer on top of the tab-level flags
@@ -4450,6 +4480,15 @@ export default function IntegraDashboard() {
       <div className="bg-glow bg-glow-a" />
       <div className="bg-glow bg-glow-b" />
 
+      {newerVersionAvailable && (
+        <div className="version-banner">
+          <RefreshCw size={14} />
+          <span>A newer version is available — refresh to update.</span>
+          <button onClick={() => window.location.reload()}>Refresh now</button>
+          <button className="version-banner-dismiss" onClick={() => setNewerVersionAvailable(null)} aria-label="Dismiss"><X size={14} /></button>
+        </div>
+      )}
+
       {currentUser?.username === "dev" && (
         <div className="test-badge">🧪 TEST ACCOUNT</div>
       )}
@@ -4873,6 +4912,15 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 .test-badge { position: fixed; top: 10px; right: 10px; background: rgba(248,113,113,.2); color: #F87171;
   padding: 6px 12px; border-radius: 20px; font-size: 10px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .05em; border: 1px solid rgba(248,113,113,.4); z-index: 999; pointer-events: none; }
+.version-banner { position: sticky; top: 0; z-index: 998; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; background: rgba(227,95,12,.16); border-bottom: 1px solid rgba(227,95,12,.35);
+  color: #EAF0F6; font-size: 12.5px; flex-wrap: wrap; }
+.version-banner svg { color: #E35F0C; flex-shrink: 0; }
+.version-banner button { font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  border-radius: 8px; padding: 5px 12px; border: 1px solid rgba(227,95,12,.4); background: rgba(227,95,12,.2); color: #EAF0F6; }
+.version-banner button:hover { background: rgba(227,95,12,.3); }
+.version-banner-dismiss { margin-left: auto; background: transparent !important; border: none !important;
+  padding: 4px !important; display: flex; color: #8A97A8 !important; }
 .bg-glow-b { width: 380px; height: 380px; background: #C9A227; bottom: -140px; left: -80px; }
 
 .topbar { position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; flex-wrap: wrap; gap: 10px; }
