@@ -3585,7 +3585,13 @@ export default function IntegraDashboard() {
       if (!res.ok) throw new Error(await extractErrorDetail(res));
       const data = await res.json();
       if (!data.rate) throw new Error("Response missing rate field");
-      const updated = [{ date: data.date, rate: data.rate, source: data.source }, ...exchangeRateHistory].slice(0, 180);
+      // Fetch current history fresh from Sheets rather than trusting the component's
+      // exchangeRateHistory state — that state is populated by a separate sync effect
+      // with no guaranteed ordering relative to this one. If this ran first (state still
+      // empty from initial load), writing [newEntry] alone would have overwritten the
+      // ENTIRE sheet's history with just today's row — exactly what was happening.
+      const currentHistory = (await fetchExchangeRateFromSheets()) || exchangeRateHistory;
+      const updated = [{ date: data.date, rate: data.rate, source: data.source }, ...currentHistory.filter((h) => h.date !== data.date)].slice(0, 180);
       setExchangeRateHistory(updated);
       writeExchangeRateToSheets(updated); // so the whole team sees the auto-fetched rate too, not just this browser
       localStorage.setItem("lastExRateFetch", today);
