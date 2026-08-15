@@ -1753,7 +1753,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
 
 /* ----------------------------- Timeline tab ----------------------------- */
 
-function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled }) {
+function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled, dismissedLoadingBarges, dismissLoadingBarge }) {
   const [hoveredMonth, setHoveredMonth] = useState(null);
   const monthCounts = useMemo(() => {
     const arr = MONTHS.map(() => ({ final: 0, draft: 0, finalWMT: 0, draftWMT: 0 }));
@@ -1776,15 +1776,7 @@ function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled }) {
   // with no report yet simply won't have these fields, so this naturally only includes
   // barges someone has actually reported progress for.
   const allLoadingBarges = useMemo(() => barges.filter((b) => b.progressPercent !== undefined).sort((a, b) => a.no - b.no), [barges]);
-  const [dismissedLoading, setDismissedLoading] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("dismissedLoadingBarges") || "[]")); } catch (e) { return new Set(); }
-  });
-  const dismissLoadingBarge = (no) => {
-    const next = new Set(dismissedLoading); next.add(no);
-    setDismissedLoading(next);
-    try { localStorage.setItem("dismissedLoadingBarges", JSON.stringify([...next])); } catch (e) {}
-  };
-  const loadingBarges = allLoadingBarges.filter((b) => !dismissedLoading.has(b.no));
+  const loadingBarges = allLoadingBarges.filter((b) => !dismissedLoadingBarges.has(b.no));
   const activeCount = loadingBarges.filter((b) => b.loadingStatus !== "loaded" && (b.progressPercent || 0) < 100).length;
   const completeCount = loadingBarges.length - activeCount;
 
@@ -3376,6 +3368,7 @@ export default function IntegraDashboard() {
     try { return localStorage.getItem("integraDataLastUpdated") || DATA_LAST_UPDATED; } catch (e) { return DATA_LAST_UPDATED; }
   });
   const [newerVersionAvailable, setNewerVersionAvailable] = useState(null);
+  const [dismissedLoadingBarges, setDismissedLoadingBarges] = useState(new Set());
   const [importStatus, setImportStatus] = useState("");
 
   useEffect(() => {
@@ -4039,6 +4032,14 @@ export default function IntegraDashboard() {
       const versionRow = data.find((r) => r["Key"] === "LatestKnownVersion");
       if (versionRow?.Value && versionRow.Value > APP_VERSION) setNewerVersionAvailable(versionRow.Value);
       else writeAppVersionIfNewer(versionRow?.Value);
+      // Shared across every user — a barge dismissed by anyone stays dismissed for
+      // everyone, rather than the old localStorage approach which was per-browser only
+      // and could never actually be "for all users" no matter what.
+      const dismissedRow = data.find((r) => r["Key"] === "DismissedLoadingBarges");
+      if (dismissedRow?.Value) {
+        const nums = String(dismissedRow.Value).split(",").map((s) => parseInt(s.trim())).filter((n) => !isNaN(n));
+        setDismissedLoadingBarges(new Set(nums));
+      }
       return true;
     } catch (error) {
       console.error("Error fetching Meta from Sheets:", error);
@@ -4052,6 +4053,12 @@ export default function IntegraDashboard() {
     if (recordedVersion === APP_VERSION) return;
     if (recordedVersion && recordedVersion > APP_VERSION) return; // recorded is newer than us — don't downgrade the record
     writeMetaToSheets({ LatestKnownVersion: APP_VERSION });
+  };
+  const dismissLoadingBarge = (no) => {
+    const next = new Set(dismissedLoadingBarges);
+    next.add(no);
+    setDismissedLoadingBarges(next);
+    writeMetaToSheets({ DismissedLoadingBarges: [...next].join(",") }); // shared — visible to every user on their next sync
   };
 
   // ---- Sub-feature (granular) flags — a finer layer on top of the tab-level flags
@@ -4654,7 +4661,7 @@ export default function IntegraDashboard() {
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && userFeatures.stock && <StockTab domes={domes} />}
         {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
-        {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} isFeatureEnabled={isFeatureEnabled} />}
+        {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} isFeatureEnabled={isFeatureEnabled} dismissedLoadingBarges={dismissedLoadingBarges} dismissLoadingBarge={dismissLoadingBarge} />}
         {tab === "financials" && isAdmin && userFeatures.financials && (
           <FinancialsTab
             barges={barges} hpmHistory={hpmHistory} setHpmHistory={setHpmHistory}
