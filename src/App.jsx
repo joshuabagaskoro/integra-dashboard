@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, useContext, createContext, useCallback } from "react";
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
   Layers, ChevronDown, Gauge, Upload, X,
@@ -736,6 +736,124 @@ function parseBargeComposition(rows) {
     sources.push({ domeId: String(row[domeIdx]).trim(), amt });
   }
   return { ...meta, sources };
+}
+
+/* ------------------------- in-app feedback (toasts, confirm, prompt) -------------------------
+ * Replaces every window.alert()/confirm()/prompt() call in this file. Native browser dialogs
+ * can't be styled to match the app's dark glass UI, block the whole tab while open, and are
+ * the fastest visual tell that a screen is an internal tool rather than a real product. This
+ * context gives any component in the tree three calls — showToast, showConfirm, showPrompt —
+ * that render as in-app toasts/modals instead. showConfirm/showPrompt return a Promise so call
+ * sites read almost exactly like the native versions did, just with an `await` in front. */
+const UIFeedbackContext = createContext(null);
+
+function useUIFeedback() {
+  const ctx = useContext(UIFeedbackContext);
+  if (!ctx) throw new Error("useUIFeedback() must be called from inside UIFeedbackProvider");
+  return ctx;
+}
+
+let toastIdSeq = 0;
+
+function UIFeedbackProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+  const [dialog, setDialog] = useState(null); // { mode: 'confirm'|'prompt', message, resolve, ... }
+
+  const dismissToast = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), []);
+
+  const showToast = useCallback((message, type = "error", duration = 5000) => {
+    const id = ++toastIdSeq;
+    setToasts((t) => [...t, { id, message, type }]);
+    if (duration) setTimeout(() => dismissToast(id), duration);
+  }, [dismissToast]);
+
+  const showConfirm = useCallback((message, opts = {}) => new Promise((resolve) => {
+    setDialog({ mode: "confirm", message, resolve, danger: !!opts.danger, confirmLabel: opts.confirmLabel || "Confirm", cancelLabel: opts.cancelLabel || "Cancel" });
+  }), []);
+
+  const showPrompt = useCallback((message, defaultValue = "", opts = {}) => new Promise((resolve) => {
+    setDialog({ mode: "prompt", message, defaultValue: defaultValue ?? "", resolve, unit: opts.unit || "", inputType: opts.inputType || "text" });
+  }), []);
+
+  const closeDialog = (result) => { dialog?.resolve?.(result); setDialog(null); };
+
+  return (
+    <UIFeedbackContext.Provider value={{ showToast, showConfirm, showPrompt }}>
+      {children}
+      <div className="toast-stack" role="region" aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast toast-${t.type}`} role={t.type === "error" ? "alert" : "status"}>
+            <span className="toast-msg">{t.message}</span>
+            <button className="toast-close" onClick={() => dismissToast(t.id)} aria-label="Dismiss notification"><X size={13} /></button>
+          </div>
+        ))}
+      </div>
+      {dialog && <FeedbackDialog dialog={dialog} onClose={closeDialog} />}
+    </UIFeedbackContext.Provider>
+  );
+}
+
+function FeedbackDialog({ dialog, onClose }) {
+  const [value, setValue] = useState(dialog.defaultValue ?? "");
+  const primaryRef = useRef(null);
+
+  useEffect(() => { primaryRef.current?.focus(); primaryRef.current?.select?.(); }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose(dialog.mode === "confirm" ? false : null);
+      if (e.key === "Enter" && dialog.mode === "prompt") onClose(value);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [value, dialog, onClose]);
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={dialog.message}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(dialog.mode === "confirm" ? false : null); }}>
+      <div className="glass modal-card">
+        <p className="modal-message">{dialog.message}</p>
+        {dialog.mode === "prompt" && (
+          <div className="modal-input-row">
+            <input ref={primaryRef} type={dialog.inputType} className="modal-input" value={value}
+              onChange={(e) => setValue(e.target.value)} />
+            {dialog.unit && <span className="modal-input-unit">{dialog.unit}</span>}
+          </div>
+        )}
+        <div className="modal-actions">
+          <button className="btn-ghost" onClick={() => onClose(dialog.mode === "confirm" ? false : null)}>{dialog.cancelLabel || "Cancel"}</button>
+          <button ref={dialog.mode === "confirm" ? primaryRef : null} className={dialog.danger ? "btn-danger" : "btn-primary"}
+            onClick={() => onClose(dialog.mode === "confirm" ? true : value)}>
+            {dialog.mode === "confirm" ? (dialog.confirmLabel || "Confirm") : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Catches render-time errors anywhere below it and shows a recoverable screen instead of a
+ * blank white page. Google Sheets stays the source of truth regardless, so a crash here never
+ * risks data — it's purely about giving the person at the keyboard a way back in. */
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error, info) { console.error("IntegraDashboard crashed:", error, info); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="crash-screen">
+          <div className="glass crash-card">
+            <AlertTriangle size={26} />
+            <h2>Something went wrong</h2>
+            <p>The dashboard hit an unexpected error and couldn't keep rendering. Nothing in Google Sheets is affected — reloading restarts the app.</p>
+            <button className="btn-primary" onClick={() => window.location.reload()}>Reload</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 /* ----------------------------- small UI bits ----------------------------- */
@@ -1555,6 +1673,7 @@ function StockTab({ domes }) {
 /* ----------------------------- Barging Plan tab ----------------------------- */
 
 function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
+  const { showToast } = useUIFeedback();
   const [open, setOpen] = useState(false);
   const [addDome, setAddDome] = useState("");
   const [addAmt, setAddAmt] = useState("");
@@ -1627,7 +1746,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
   };
   const applyImportedComposition = (comp) => {
     if (!comp.sources.length) {
-      alert("⚠️ No usable rows found in this file. Check that it has a \"Dome ID\" / \"WMT\" header row somewhere in the first 15 rows, and that Dome IDs match what's on the Stock tab.");
+      showToast("No usable rows found in this file. Check that it has a \"Dome ID\" / \"WMT\" header row somewhere in the first 15 rows, and that Dome IDs match what's on the Stock tab.", "warning");
       return;
     }
     const validSources = [];
@@ -1638,10 +1757,11 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
       else unknownIds.push(c.domeId);
     });
     if (unknownIds.length) {
-      alert(
-        `⚠️ Check your file — ${unknownIds.length} Dome ID${unknownIds.length > 1 ? "s were" : " was"} not found in stock and ${unknownIds.length > 1 ? "were" : "was"} skipped:\n\n` +
+      showToast(
+        `Check your file — ${unknownIds.length} Dome ID${unknownIds.length > 1 ? "s were" : " was"} not found in stock and ${unknownIds.length > 1 ? "were" : "was"} skipped: ` +
         unknownIds.slice(0, 20).join(", ") + (unknownIds.length > 20 ? `, +${unknownIds.length - 20} more` : "") +
-        `\n\nDouble-check the Dome ID spelling against the Stock tab. ${validSources.length} valid row${validSources.length === 1 ? "" : "s"} were still applied.`
+        `. Double-check the Dome ID spelling against the Stock tab. ${validSources.length} valid row${validSources.length === 1 ? "" : "s"} were still applied.`,
+        "warning", 10000
       );
     }
     if (validSources.length) {
@@ -1752,7 +1872,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
 
           <div className="barge-row-actions">
             {!barge.finalized && (
-              <button className="btn-status" onClick={() => { onDataCommitted?.(); alert(`✅ Barge #${barge.no} composition pushed to Sheets.`); }}>
+              <button className="btn-status" onClick={() => { onDataCommitted?.(); showToast(`Barge #${barge.no} composition pushed to Sheets.`, "success"); }}>
                 <RefreshCw size={13} /> Update Barge
               </button>
             )}
@@ -1943,9 +2063,10 @@ function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled, dismiss
 function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory, setExchangeRateHistory,
   getHpmOnDate, getExchangeRateOnDate, calculateRoyalty, getHpmTrendPercent, getExRateTrendPercent, exportFinancialData,
   onHpmUpdated, onExchangeRateUpdated }) {
+  const { showPrompt } = useUIFeedback();
 
-  const updateHpm = () => {
-    const newPrice = prompt("Enter new HPM price (USD/WMT):", hpmHistory[0]?.price);
+  const updateHpm = async () => {
+    const newPrice = await showPrompt("Enter new HPM price", hpmHistory[0]?.price ?? "", { unit: "USD/WMT", inputType: "number" });
     if (newPrice && !isNaN(parseFloat(newPrice))) {
       const today = todayLocalStr();
       const updated = [{ date: today, price: parseFloat(newPrice), unit: "USD/WMT" }, ...hpmHistory].slice(0, 180);
@@ -1953,8 +2074,8 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
       onHpmUpdated?.(updated);
     }
   };
-  const updateRate = () => {
-    const newRate = prompt("Enter new exchange rate (IDR/USD):", exchangeRateHistory[0]?.rate);
+  const updateRate = async () => {
+    const newRate = await showPrompt("Enter new exchange rate", exchangeRateHistory[0]?.rate ?? "", { unit: "IDR/USD", inputType: "number" });
     if (newRate && !isNaN(parseInt(newRate))) {
       const today = todayLocalStr();
       const updated = [{ date: today, rate: parseInt(newRate), source: "Manual" }, ...exchangeRateHistory].slice(0, 180);
@@ -2147,18 +2268,24 @@ function LoginLogTab({ loginHistory }) {
  * AccountManagement — dev-only. Create/disable/delete users.
  * ============================================================ */
 function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser }) {
+  const { showToast, showConfirm } = useUIFeedback();
   const [showForm, setShowForm] = useState(false);
   const [newUser, setNewUser] = useState({ username: "", password: "", role: "operation" });
 
   const handleCreate = async () => {
-    if (!newUser.username || !newUser.password) { alert("⚠️ Username and password required"); return; }
-    if (allUsers.some((u) => u["Username"] === newUser.username)) { alert("❌ Username already exists"); return; }
+    if (!newUser.username || !newUser.password) { showToast("Username and password required", "warning"); return; }
+    if (allUsers.some((u) => u["Username"] === newUser.username)) { showToast("Username already exists", "error"); return; }
     const today = todayLocalStr();
     const success = await onCreateUser({
       Username: newUser.username, Password: newUser.password, Role: newUser.role,
       Status: "active", Created_Date: today, Last_Modified: today,
     });
-    if (success) { alert(`✅ User ${newUser.username} created`); setNewUser({ username: "", password: "", role: "operation" }); setShowForm(false); }
+    if (success) { showToast(`User ${newUser.username} created`, "success"); setNewUser({ username: "", password: "", role: "operation" }); setShowForm(false); }
+  };
+
+  const handleDelete = async (username) => {
+    const ok = await showConfirm(`Permanently delete user "${username}"? This cannot be undone.`, { danger: true, confirmLabel: "Delete" });
+    if (ok) onDeleteUser(username);
   };
 
   return (
@@ -2203,7 +2330,7 @@ function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser
               <button onClick={() => onDisableUser(u["Username"], u["Status"] === "active" ? "disabled" : "active")} className="btn-settings-action btn-sync-sheets" style={{ padding: "6px 10px", fontSize: 10 }}>
                 {u["Status"] === "active" ? "⛔ Disable" : "✅ Enable"}
               </button>
-              <button onClick={() => { if (confirm(`⚠️ Permanently delete user "${u["Username"]}"? This cannot be undone.`)) onDeleteUser(u["Username"]); }}
+              <button onClick={() => handleDelete(u["Username"])}
                 className="btn-settings-action btn-logout-action" style={{ padding: "6px 10px", fontSize: 10 }}>🗑️ Delete</button>
             </div>
           </div>
@@ -2220,6 +2347,7 @@ function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser
  * detailed sheet and the tab-level sheet (derived from it) at once.
  * ============================================================ */
 function SubFeatureConfiguration({ allUsers, allDetailedFlags, onSave }) {
+  const { showToast } = useUIFeedback();
   const [selectedUser, setSelectedUser] = useState("");
   const [selectedTab, setSelectedTab] = useState("");
   const [localFlags, setLocalFlags] = useState(allDetailedFlags);
@@ -2242,8 +2370,8 @@ function SubFeatureConfiguration({ allUsers, allDetailedFlags, onSave }) {
     setIsSaving(true);
     const success = await onSave(localFlags);
     setIsSaving(false);
-    if (success) alert(`✅ Saved for ${selectedUser} — ${tabConfig.label}`);
-    else alert("❌ Save failed — check the sync error detail above.");
+    if (success) showToast(`Saved for ${selectedUser} — ${tabConfig.label}`, "success");
+    else showToast("Save failed — check the sync error detail above.", "error");
   };
 
   return (
@@ -2299,6 +2427,7 @@ function SubFeatureConfiguration({ allUsers, allDetailedFlags, onSave }) {
 }
 
 function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus, allUsers, allFeatureFlags, setAllUsers, setAllFeatureFlags, writeUsersToSheets, writeFeatureFlagsToSheets, allDetailedFlags, setAllDetailedFlags, writeDetailedFeatureFlagsToSheets, isFeatureEnabled }) {
+  const { showToast } = useUIFeedback();
   return (
     <div className="stack">
       <section className="glass panel" style={{ padding: 0 }}>
@@ -2365,7 +2494,7 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                   const updated = allUsers.map((u) => u["Username"] === username ? { ...u, Status: status, Last_Modified: todayLocalStr() } : u);
                   setAllUsers(updated);
                   const ok = await writeUsersToSheets(updated);
-                  alert(ok ? `✅ User ${username} ${status}` : "❌ Failed to update user");
+                  showToast(ok ? `User ${username} ${status}` : "Failed to update user", ok ? "success" : "error");
                 }}
                 onDeleteUser={async (username) => {
                   const updatedUsers = allUsers.filter((u) => u["Username"] !== username);
@@ -2379,7 +2508,8 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                   const usersOk = await writeUsersToSheets(updatedUsers);
                   const flagsOk = await writeFeatureFlagsToSheets(updatedFlags);
                   const detailedOk = await writeDetailedFeatureFlagsToSheets(updatedDetailed);
-                  alert(usersOk && flagsOk && detailedOk ? `✅ User ${username} deleted` : "❌ Failed to fully delete user");
+                  const allOk = usersOk && flagsOk && detailedOk;
+                  showToast(allOk ? `User ${username} deleted` : "Failed to fully delete user", allOk ? "success" : "error");
                 }}
               />
               <SubFeatureConfiguration allUsers={allUsers} allDetailedFlags={allDetailedFlags} onSave={writeDetailedFeatureFlagsToSheets} />
@@ -3044,12 +3174,13 @@ function SyncingScreen({ syncFailed, syncError, progress, onSkip }) {
  * fields, then confirm to update the barge + push to Sheets.
  * ============================================================ */
 function LoadingReportModal({ onClose, onSubmit }) {
+  const { showToast } = useUIFeedback();
   const [text, setText] = useState("");
 
   const handleParse = () => {
-    if (!text.trim()) { alert("⚠️ Please paste a loading report"); return; }
+    if (!text.trim()) { showToast("Please paste a loading report", "warning"); return; }
     const parsed = parseLoadingReportText(text);
-    if (parsed.error) { alert("❌ Parse error: " + parsed.error); return; }
+    if (parsed.error) { showToast("Parse error: " + parsed.error, "error"); return; }
     onSubmit(parsed);
     setText("");
   };
@@ -3081,10 +3212,11 @@ function LoadingReportModal({ onClose, onSubmit }) {
 }
 
 function LoadingReportReviewModal({ data, onClose, onConfirm, isSubmitting }) {
+  const { showToast } = useUIFeedback();
   const [edited, setEdited] = useState(data);
 
   const handleConfirm = () => {
-    if (!edited.shipmentNumber) { alert("⚠️ Shipment number required"); return; }
+    if (!edited.shipmentNumber) { showToast("Shipment number required", "warning"); return; }
     onConfirm(edited);
   };
 
@@ -3347,7 +3479,8 @@ function BargeExportModal({ barge, domesById, onClose }) {
   );
 }
 
-export default function IntegraDashboard() {
+function IntegraDashboardInner() {
+  const { showToast } = useUIFeedback();
   const [tab, setTab] = useState("overview");
   const [domes, setDomes] = useState(() => withInitialStock(DEFAULT_DOMES));
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -3463,7 +3596,7 @@ export default function IntegraDashboard() {
           sessionStorage.removeItem("integraSession");
           setCurrentUser(null);
           setIsLoggedIn(false);
-          alert("Your session has expired. Please log in again.");
+          showToast("Your session has expired. Please log in again.", "warning", 8000);
         }
       } catch (e) {}
     };
@@ -3716,12 +3849,10 @@ export default function IntegraDashboard() {
     setTimeout(() => downloadCSV(`Integra-HPMHistory-${today}.csv`, exportHPMHistoryCSV()), 800);
     setTimeout(() => downloadCSV(`Integra-ExchangeRates-${today}.csv`, exportExchangeRateHistoryCSV()), 1200);
     setTimeout(() => downloadCSV(`Integra-LoginHistory-${today}.csv`, exportLoginHistoryCSV()), 1600);
-    alert(
-      "✅ Export complete! 5 CSV files downloaded:\n\n" +
-      `1. Integra-Domes-${today}.csv\n2. Integra-Barges-${today}.csv\n3. Integra-HPMHistory-${today}.csv\n` +
-      `4. Integra-ExchangeRates-${today}.csv\n5. Integra-LoginHistory-${today}.csv\n\n` +
-      "Next: import each file into the matching tab of your Google Sheet."
-    );
+    setTimeout(() => showToast(
+      "Export complete — 5 CSV files downloaded (Domes, Barges, HPMHistory, ExchangeRates, LoginHistory). Import each into the matching tab of your Google Sheet.",
+      "success", 8000
+    ), 1700);
   };
 
   // ---- Phase 2B: live Google Sheets sync (admin only) ----
@@ -4297,7 +4428,7 @@ export default function IntegraDashboard() {
     setIsSubmittingLoadingReport(true);
     try {
       const bargeExists = barges.some((b) => b.no === confirmedData.shipmentNumber);
-      if (!bargeExists) { alert(`❌ Barge #${confirmedData.shipmentNumber} not found`); return; }
+      if (!bargeExists) { showToast(`Barge #${confirmedData.shipmentNumber} not found`, "error"); return; }
 
       const qtyOnBoard = confirmedData.qtyOnBoard || 0;
       const balanceDue = confirmedData.balanceDue || 0;
@@ -4321,12 +4452,12 @@ export default function IntegraDashboard() {
       });
       setBarges(updatedBarges);
       await writeBargesToSheets(updatedBarges);
-      alert(`✅ Loading progress saved! Barge #${confirmedData.shipmentNumber} updated.`);
+      showToast(`Loading progress saved! Barge #${confirmedData.shipmentNumber} updated.`, "success");
       setShowReviewModal(false);
       setReviewData(null);
     } catch (error) {
       console.error("Error saving loading progress:", error);
-      alert("❌ Error: " + error.message);
+      showToast("Error: " + error.message, "error");
     } finally {
       setIsSubmittingLoadingReport(false);
     }
@@ -4439,7 +4570,7 @@ export default function IntegraDashboard() {
           else if (name.includes("imn-4")) { source = "production"; forced = "IMN-4"; }
           else if (name.includes("production")) { source = "production"; }
           const { domes: rows, duplicateIds, headerError } = parseDomeCSV(evt.target.result, source, forced);
-          if (headerError) alert(`⚠️ ${file.name}: ${headerError}`);
+          if (headerError) showToast(`${file.name}: ${headerError}`, "warning", 8000);
           if (duplicateIds.length) {
             console.warn(`Duplicate Dome IDs in ${file.name} (kept the last occurrence of each):`, duplicateIds);
             allDuplicateWarnings.push(...duplicateIds.map((d) => `${d} in ${file.name}`));
@@ -4492,10 +4623,11 @@ export default function IntegraDashboard() {
           }
           setImportStatus(`✓ Imported ${merged.length} domes`);
           if (allDuplicateWarnings.length) {
-            alert(
-              `⚠️ Found ${allDuplicateWarnings.length} duplicate Dome ID${allDuplicateWarnings.length > 1 ? "s" : ""} within your source file(s) — kept the last row for each and skipped the rest:\n\n` +
-              allDuplicateWarnings.slice(0, 20).join("\n") + (allDuplicateWarnings.length > 20 ? `\n+${allDuplicateWarnings.length - 20} more` : "") +
-              `\n\nWorth checking the original Excel for these rows — they usually mean the same dome got entered twice.`
+            showToast(
+              `Found ${allDuplicateWarnings.length} duplicate Dome ID${allDuplicateWarnings.length > 1 ? "s" : ""} within your source file(s) — kept the last row for each and skipped the rest: ` +
+              allDuplicateWarnings.slice(0, 20).join(", ") + (allDuplicateWarnings.length > 20 ? `, +${allDuplicateWarnings.length - 20} more` : "") +
+              `. Worth checking the original Excel for these rows — they usually mean the same dome got entered twice.`,
+              "warning", 10000
             );
           }
           setTimeout(() => { setShowImport(false); setImportStatus(""); }, 1500);
@@ -4961,6 +5093,64 @@ html, body { margin: 0; padding: 0; background: #070A10; }
 #root { margin: 0; padding: 0; }
 
 * { box-sizing: border-box; }
+
+/* Visible keyboard focus on every interactive element — buttons, links, inputs, chips —
+ * instead of relying on each component's own hover-only styling. Uses :focus-visible so
+ * it only shows for keyboard/assistive-tech navigation, not every mouse click. */
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid #E35F0C;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respects the OS-level "reduce motion" accessibility setting — anyone with vestibular
+ * sensitivity or who's just asked their system to cut down on movement gets a near-static
+ * app instead of every hover/transition still animating at full speed. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---- in-app toasts (replaces window.alert) ---- */
+.toast-stack { position: fixed; top: 16px; right: 16px; z-index: 1200; display: flex; flex-direction: column; gap: 10px; max-width: min(380px, calc(100vw - 32px)); }
+.toast { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: 12px;
+  background: linear-gradient(150deg, rgba(20,26,36,.97), rgba(12,16,22,.97)); border: 1px solid rgba(255,255,255,.12);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 12px 30px rgba(0,0,0,.45);
+  font-size: 12.5px; line-height: 1.5; color: #EAF0F6; animation: toast-in .18s ease; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+.toast-msg { flex: 1; }
+.toast-close { flex-shrink: 0; background: transparent; border: none; color: #8A97A8; cursor: pointer; padding: 2px; display: flex; }
+.toast-close:hover { color: #EAF0F6; }
+.toast-error { border-left: 3px solid #F87171; }
+.toast-warning { border-left: 3px solid #FBBF24; }
+.toast-success { border-left: 3px solid #4ADE80; }
+
+/* ---- in-app confirm/prompt dialogs (replaces window.confirm / window.prompt) ---- */
+.modal-overlay { position: fixed; inset: 0; z-index: 1300; display: flex; align-items: center; justify-content: center;
+  background: rgba(5,7,10,.6); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); padding: 20px; animation: modal-fade .15s ease; }
+@keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
+.modal-card { width: 100%; max-width: 380px; padding: 22px; }
+.modal-message { font-size: 13.5px; line-height: 1.55; color: #EAF0F6; margin: 0 0 16px; }
+.modal-input-row { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.modal-input { flex: 1; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.16); border-radius: 10px;
+  color: #EAF0F6; font-family: 'JetBrains Mono', monospace; font-size: 14px; padding: 10px 12px; }
+.modal-input:focus { border-color: #E35F0C; outline: none; }
+.modal-input-unit { font-size: 11.5px; color: #8A97A8; font-family: 'JetBrains Mono', monospace; white-space: nowrap; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---- crash screen (ErrorBoundary fallback) ---- */
+.crash-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: radial-gradient(circle at 20% 0%, #101826 0%, #070A10 55%, #050709 100%); color: #EAF0F6; }
+.crash-card { max-width: 380px; padding: 28px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.crash-card svg { color: #F87171; }
+.crash-card h2 { font-family: 'Space Grotesk', sans-serif; font-size: 16px; margin: 0; }
+.crash-card p { font-size: 12.5px; color: #B7C0CC; line-height: 1.55; margin: 0 0 6px; }
+
 .app {
   min-height: 100vh;
   background: radial-gradient(circle at 20% 0%, #101826 0%, #070A10 55%, #050709 100%);
@@ -5784,3 +5974,17 @@ html, body { margin: 0; padding: 0; background: #070A10; }
   .log-header-row, .log-row { grid-template-columns: 1fr 70px 70px; font-size: 10px; padding: 10px 12px; }
 }
 `;
+
+// Wraps the real app in ErrorBoundary (recoverable crash screen instead of a blank white
+// page) and UIFeedbackProvider (in-app toasts/confirm/prompt instead of native browser
+// dialogs). Kept as a thin outer shell so IntegraDashboardInner — and everything it
+// renders — can call useUIFeedback() from anywhere in the tree via context.
+export default function IntegraDashboard() {
+  return (
+    <ErrorBoundary>
+      <UIFeedbackProvider>
+        <IntegraDashboardInner />
+      </UIFeedbackProvider>
+    </ErrorBoundary>
+  );
+}
