@@ -262,6 +262,17 @@ function withInitialStock(list) {
 // rather than the app writing it via the API as plain text, which stays plain text. Since
 // rows can be a mix of both depending on how each one got into the sheet, any date field
 // read back needs this same defensive check applied.
+// Every "today's date" computation in this file used to go through
+// todayLocalStr() — but toISOString() converts to UTC first,
+// which shifts the date back a full day for any timezone ahead of UTC (e.g. WIB,
+// UTC+7): at 2 AM local time on the 16th, that pattern reports the 15th. This reads the
+// local calendar date directly instead, with no UTC conversion involved at all.
+function todayLocalStr() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function sheetValueToDateStr(value) {
   if (typeof value !== "number") return value; // already a string — nothing to convert
   if (value < 25000 || value > 60000) return value; // outside a plausible date-serial range (~1968-2064), leave as-is
@@ -511,8 +522,9 @@ function fillOneBarge(pool, bargeSize, target, allowedContractors, simgTarget) {
   return { sources: Object.values(merged), totalWMT: filled, grade };
 }
 
-function statusFor(b, bargeSize, target, tolerance) {
-  if (b.totalWMT < bargeSize - 1) return b.totalWMT === 0 ? "unplanned" : "incomplete";
+function statusFor(b, bargeSize, target, tolerance, finalized) {
+  if (b.totalWMT === 0) return "unplanned";
+  if (!finalized && b.totalWMT < bargeSize - 1) return "incomplete";
   const dev = Math.abs(b.grade - target);
   if (dev <= tolerance) return "exact";
   return b.grade > target ? "excess" : "deficit";
@@ -1911,7 +1923,7 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
   const updateHpm = () => {
     const newPrice = prompt("Enter new HPM price (USD/WMT):", hpmHistory[0]?.price);
     if (newPrice && !isNaN(parseFloat(newPrice))) {
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayLocalStr();
       const updated = [{ date: today, price: parseFloat(newPrice), unit: "USD/WMT" }, ...hpmHistory].slice(0, 180);
       setHpmHistory(updated);
       onHpmUpdated?.(updated);
@@ -1920,7 +1932,7 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
   const updateRate = () => {
     const newRate = prompt("Enter new exchange rate (IDR/USD):", exchangeRateHistory[0]?.rate);
     if (newRate && !isNaN(parseInt(newRate))) {
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayLocalStr();
       const updated = [{ date: today, rate: parseInt(newRate), source: "Manual" }, ...exchangeRateHistory].slice(0, 180);
       setExchangeRateHistory(updated);
       onExchangeRateUpdated?.(updated);
@@ -2117,7 +2129,7 @@ function AccountManagement({ allUsers, onCreateUser, onDisableUser, onDeleteUser
   const handleCreate = async () => {
     if (!newUser.username || !newUser.password) { alert("⚠️ Username and password required"); return; }
     if (allUsers.some((u) => u["Username"] === newUser.username)) { alert("❌ Username already exists"); return; }
-    const today = new Date().toISOString().split("T")[0];
+    const today = todayLocalStr();
     const success = await onCreateUser({
       Username: newUser.username, Password: newUser.password, Role: newUser.role,
       Status: "active", Created_Date: today, Last_Modified: today,
@@ -2326,7 +2338,7 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
                   return await writeUsersToSheets(updated);
                 }}
                 onDisableUser={async (username, status) => {
-                  const updated = allUsers.map((u) => u["Username"] === username ? { ...u, Status: status, Last_Modified: new Date().toISOString().split("T")[0] } : u);
+                  const updated = allUsers.map((u) => u["Username"] === username ? { ...u, Status: status, Last_Modified: todayLocalStr() } : u);
                   setAllUsers(updated);
                   const ok = await writeUsersToSheets(updated);
                   alert(ok ? `✅ User ${username} ${status}` : "❌ Failed to update user");
@@ -3363,7 +3375,7 @@ export default function IntegraDashboard() {
   const [exportBarge, setExportBarge] = useState(null); // barge object currently being exported, or null
   const domesByIdTop = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
   const [showImport, setShowImport] = useState(false);
-  const [importDate, setImportDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [importDate, setImportDate] = useState(() => todayLocalStr());
   const [dataLastUpdated, setDataLastUpdated] = useState(() => {
     try { return localStorage.getItem("integraDataLastUpdated") || DATA_LAST_UPDATED; } catch (e) { return DATA_LAST_UPDATED; }
   });
@@ -3572,7 +3584,7 @@ export default function IntegraDashboard() {
   const runExRateAutoFetch = async () => {
     if (!isAdmin) return;
     try {
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayLocalStr();
       if (localStorage.getItem("lastExRateFetch") === today) return;
       const res = await fetchWithTimeout("/api/fetch-exchange-rate");
       if (!res.ok) throw new Error(await extractErrorDetail(res));
@@ -3613,7 +3625,7 @@ export default function IntegraDashboard() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `integra-financials-${new Date().toISOString().split("T")[0]}.csv`;
+    a.download = `integra-financials-${todayLocalStr()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -3674,7 +3686,7 @@ export default function IntegraDashboard() {
   };
 
   const exportAllForGoogleSheets = () => {
-    const today = new Date().toISOString().split("T")[0];
+    const today = todayLocalStr();
     downloadCSV(`Integra-Domes-${today}.csv`, exportDomesCSV());
     setTimeout(() => downloadCSV(`Integra-Barges-${today}.csv`, exportBargesCSV()), 400);
     setTimeout(() => downloadCSV(`Integra-HPMHistory-${today}.csv`, exportHPMHistoryCSV()), 800);
@@ -3732,7 +3744,7 @@ export default function IntegraDashboard() {
     catch (e) { stockAdjustments = undefined; }
     return {
       no: parseInt(String(row["Barge No"] ?? "").replace(/,/g, "")) || 0,
-      shipDate: sheetValueToDateStr(row["Ship Date"]) || new Date().toISOString().split("T")[0],
+      shipDate: sheetValueToDateStr(row["Ship Date"]) || todayLocalStr(),
       bargeName: row["Barge Name"] || "", tugboatName: row["Tugboat Name"] || "",
       totalWMT: cleanNum(row["Total WMT"]), grade: cleanNum(row["Grade (Ni %)"]),
       status: row["Status"] || "draft", finalized: row["Finalized"] === "Yes",
@@ -4268,7 +4280,7 @@ export default function IntegraDashboard() {
         qtyOnBoard: confirmedData.qtyOnBoard || 0,
         progressPercent: confirmedData.progressPercent || 0,
         balanceDue: confirmedData.balanceDue || 0,
-        lastUpdated: confirmedData.reportDate || new Date().toISOString().split("T")[0],
+        lastUpdated: confirmedData.reportDate || todayLocalStr(),
         // Separate field from the existing Ni-blend-quality `status` (exact/excess/
         // deficit/etc, used by StatusBadge and the Financials royalty table) — reusing
         // that field for loading progress would have broken both.
@@ -4314,7 +4326,9 @@ export default function IntegraDashboard() {
         }
         return { ...d, stock: d.stock - used };
       });
-      updatedBarges = barges.map((b) => b.no === no ? { ...b, finalized: true, stockAdjustments: adjustments } : b);
+      updatedBarges = barges.map((b) => b.no === no
+        ? { ...b, finalized: true, stockAdjustments: adjustments, status: statusFor(b, settings.bargeSize, settings.targetGrade, settings.tolerance, true) }
+        : b);
     } else {
       // Reopening: reverse exactly what finalize did, including any deficit adjustment
       // that was applied — not just adding the barged amount back blindly.
@@ -4326,7 +4340,9 @@ export default function IntegraDashboard() {
         const priorInitial = d.initialStock !== undefined ? d.initialStock : d.stock;
         return { ...d, stock: Math.max(0, d.stock + used - deficit), initialStock: priorInitial - deficit };
       });
-      updatedBarges = barges.map((b) => b.no === no ? { ...b, finalized: false, stockAdjustments: undefined } : b);
+      updatedBarges = barges.map((b) => b.no === no
+        ? { ...b, finalized: false, stockAdjustments: undefined, status: statusFor(b, settings.bargeSize, settings.targetGrade, settings.tolerance, false) }
+        : b);
     }
     setDomes(updatedDomes);
     setBarges(updatedBarges);
@@ -4426,7 +4442,7 @@ export default function IntegraDashboard() {
             const totalWMT = newSources.reduce((sum, s) => sum + s.amt, 0);
             const niSum = newSources.reduce((sum, s) => sum + s.amt * (s.grade / 100), 0);
             const grade = totalWMT > 0 ? (niSum / totalWMT) * 100 : 0;
-            return { ...b, sources: newSources, totalWMT, grade, status: statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance) };
+            return { ...b, sources: newSources, totalWMT, grade, status: statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance, b.finalized) };
           });
           setBarges(updatedBarges);
           setDataLastUpdated(importDate);
@@ -4774,7 +4790,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
         const niSum = sources.reduce((s, x) => s + x.amt * (x.grade / 100), 0);
         const grade = totalWMT > 0 ? (niSum / totalWMT) * 100 : 0;
         next.sources = sources; next.totalWMT = totalWMT; next.grade = grade;
-        next.status = statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance);
+        next.status = statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance, next.finalized);
       }
       return next;
     });
