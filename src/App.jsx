@@ -277,9 +277,18 @@ function sheetValueToDateStr(value) {
   if (typeof value !== "number") return value; // already a string — nothing to convert
   if (value < 25000 || value > 60000) return value; // outside a plausible date-serial range (~1968-2064), leave as-is
   const pad = (n) => String(n).padStart(2, "0");
-  const epoch = new Date(1899, 11, 30);
-  const d = new Date(epoch.getTime() + value * 86400000);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  // Deliberately NOT `new Date(1899, 11, 30)` here: that constructs a Date using the
+  // browser/server's LOCAL historical offset for December 1899. For Asia/Jakarta (WIB)
+  // specifically, the historical offset back then was old Batavia Mean Time, UTC+7:07:12
+  // — not the clean UTC+7 WIB uses today. That ~7-minute mismatch pushed every converted
+  // date to land 7 minutes before local midnight, which rounds down to the PREVIOUS
+  // calendar day, every time, only when running in WIB. Converting straight to a UTC
+  // timestamp via the fixed day-offset between the Sheets epoch and the Unix epoch
+  // (25569 days) and reading it back with UTC getters sidesteps local timezone history
+  // entirely, so the result is correct regardless of what timezone this runs in.
+  const ms = (value - 25569) * 86400000;
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
 function reconcileStock(domeId, grossInitialStock, barges) {
@@ -696,9 +705,16 @@ function parseBargeComposition(rows) {
         // as-is ("46244") rather than converted to an actual date. Excel's date epoch
         // is Dec 30 1899; the range check (~1968-2064) guards against treating a
         // coincidentally similar-sized WMT or other number as if it were a date.
-        const excelEpoch = new Date(1899, 11, 30);
-        const converted = new Date(excelEpoch.getTime() + value * 86400000);
-        meta.date = toDateStr(converted);
+        // Deliberately not `new Date(1899, 11, 30)` (local time) here: in Asia/Jakarta
+        // that constructs using Indonesia's historical pre-standardization offset
+        // (old Batavia Mean Time, UTC+7:07:12) rather than modern WIB's clean UTC+7,
+        // a ~7-minute mismatch that rounds every converted date down to the previous
+        // calendar day for anyone running this in WIB. Converting via the fixed day
+        // offset between the Excel epoch and the Unix epoch (25569 days) and reading
+        // back with UTC getters avoids local timezone history entirely.
+        const ms = (value - 25569) * 86400000;
+        const converted = new Date(ms);
+        meta.date = `${converted.getUTCFullYear()}-${pad(converted.getUTCMonth() + 1)}-${pad(converted.getUTCDate())}`;
       } else {
         meta.date = String(value).trim();
       }
@@ -1817,7 +1833,15 @@ function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled, dismiss
 
           <div className="loading-barge-list">
             {loadingBarges.map((b) => {
-              const isComplete = b.loadingStatus === "loaded" || (b.progressPercent || 0) >= 100;
+              // Actual total = what's loaded plus what the report says is still
+              // remaining — not the original barging plan quantity (b.totalWMT). A
+              // shipment can end up loading more or less than planned; "complete" should
+              // be measured against the real total, not the plan's number.
+              const qtyOnBoard = b.qtyOnBoard || 0;
+              const balanceDue = b.balanceDue || 0;
+              const actualTotal = qtyOnBoard + balanceDue;
+              const actualProgress = actualTotal > 0 ? Math.round((qtyOnBoard / actualTotal) * 100) : (b.progressPercent || 0);
+              const isComplete = b.loadingStatus === "loaded" || actualProgress >= 100;
               return (
                 <div key={b.no} className="loading-barge-row">
                   <div className="loading-barge-head">
@@ -1834,16 +1858,16 @@ function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled, dismiss
                   </div>
                   {isComplete ? (
                     <div className="loading-complete-msg">
-                      <CheckCircle2 size={14} /> Barge #{String(b.no).padStart(2, "0")} cargo loaded successfully — {fmt(b.totalWMT)} WMT on board.
+                      <CheckCircle2 size={14} /> Barge #{String(b.no).padStart(2, "0")} cargo loaded successfully — {fmt(qtyOnBoard || b.totalWMT)} WMT on board.
                     </div>
                   ) : (
                     <>
                       <div className="loading-bar-track loading-bar-track-sm">
-                        <div className="loading-bar-fill" style={{ width: `${Math.min(100, b.progressPercent || 0)}%` }} />
+                        <div className="loading-bar-fill" style={{ width: `${Math.min(100, actualProgress)}%` }} />
                       </div>
                       <div className="loading-barge-meta">
-                        <span>{fmt(b.qtyOnBoard)} / {fmt(b.totalWMT)} WMT ({fmt(b.progressPercent, 0)}%)</span>
-                        <span>Balance: {fmt(b.balanceDue)} WMT</span>
+                        <span>{fmt(qtyOnBoard)} / {fmt(actualTotal)} WMT ({fmt(actualProgress, 0)}%)</span>
+                        <span>Balance: {fmt(balanceDue)} WMT</span>
                       </div>
                     </>
                   )}
@@ -4275,16 +4299,25 @@ export default function IntegraDashboard() {
       const bargeExists = barges.some((b) => b.no === confirmedData.shipmentNumber);
       if (!bargeExists) { alert(`❌ Barge #${confirmedData.shipmentNumber} not found`); return; }
 
+      const qtyOnBoard = confirmedData.qtyOnBoard || 0;
+      const balanceDue = confirmedData.balanceDue || 0;
+      // The actual total is whatever's been loaded plus whatever the report says is
+      // still remaining — not the original barging plan quantity. A shipment can end up
+      // loading more or less than originally planned; the plan's number shouldn't be
+      // what "100% complete" gets measured against.
+      const actualTotal = qtyOnBoard + balanceDue;
+      const recomputedProgress = actualTotal > 0 ? Math.round((qtyOnBoard / actualTotal) * 100) : 0;
+
       const updatedBarges = barges.map((b) => b.no !== confirmedData.shipmentNumber ? b : {
         ...b,
-        qtyOnBoard: confirmedData.qtyOnBoard || 0,
-        progressPercent: confirmedData.progressPercent || 0,
-        balanceDue: confirmedData.balanceDue || 0,
+        qtyOnBoard,
+        progressPercent: recomputedProgress,
+        balanceDue,
         lastUpdated: confirmedData.reportDate || todayLocalStr(),
         // Separate field from the existing Ni-blend-quality `status` (exact/excess/
         // deficit/etc, used by StatusBadge and the Financials royalty table) — reusing
         // that field for loading progress would have broken both.
-        loadingStatus: confirmedData.progressPercent === 100 ? "loaded" : "loading",
+        loadingStatus: recomputedProgress >= 100 ? "loaded" : "loading",
       });
       setBarges(updatedBarges);
       await writeBargesToSheets(updatedBarges);
