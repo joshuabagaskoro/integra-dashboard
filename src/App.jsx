@@ -1258,7 +1258,12 @@ function SiteMap({ domes }) {
 function OverviewTab({ domes, barges, settings }) {
   const totalExisting = domes.reduce((s, d) => s + d.stock, 0);
   const actualBarged = barges.filter((b) => b.finalized).reduce((s, b) => s + b.totalWMT, 0);
-  const quotaCoverage = (totalExisting / settings.totalQuota) * 100;
+  // "Quota coverage" is fulfillment against the annual barging/shipment quota — what has
+  // actually gone out on finalized barges — not stock sitting in domes. Stock on hand is a
+  // reserves/runway figure (see stockVsQuotaPercent below for that), not a measure of
+  // progress toward the quota itself.
+  const quotaCoverage = (actualBarged / settings.totalQuota) * 100;
+  const stockVsQuotaPercent = (totalExisting / settings.totalQuota) * 100;
   const overallNi = totalExisting > 0 ? domes.reduce((s, d) => s + d.stock * d.ni, 0) / totalExisting : 0;
 
   const inventoryStats = useMemo(() => aggregateDomes(domes.filter((d) => d.source === "inventory")), [domes]);
@@ -1308,7 +1313,7 @@ function OverviewTab({ domes, barges, settings }) {
       <section className="glass panel">
         <div className="panel-head"><Gauge size={16} /><span>Existing stock vs. 2026 quota</span></div>
         <div className="stacked-bar">
-          <div className="stacked-seg" style={{ width: `${Math.min(quotaCoverage, 100)}%`, background: "#E35F0C" }} />
+          <div className="stacked-seg" style={{ width: `${Math.min(stockVsQuotaPercent, 100)}%`, background: "#E35F0C" }} />
         </div>
         <div className="legend">
           <span className="legend-item"><span className="dot" style={{ background: "#E35F0C" }} />{fmt(totalExisting)} WMT on hand</span>
