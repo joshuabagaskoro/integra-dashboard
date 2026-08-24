@@ -688,15 +688,21 @@ function parseBargeComposition(rows) {
     const value = row[1];
     if (value === undefined || value === "") continue;
     if (label.includes("date")) {
-      // Use local calendar date components, not toISOString() — that converts to UTC,
-      // which shifts the date back a full day for timezones ahead of UTC (e.g. WIB,
-      // UTC+7): a Date representing "Aug 10 midnight local" becomes "Aug 9, 17:00 UTC",
-      // so .toISOString() would have silently reported the wrong day for every user in
-      // Indonesia's own timezone.
       const pad = (n) => String(n).padStart(2, "0");
-      const toDateStr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       if (value instanceof Date) {
-        meta.date = toDateStr(value);
+        // Defensive only — cellDates is off (see XLSX.read above), so this shouldn't
+        // fire in practice. If some future path ever does hand us a Date object here,
+        // don't trust its own getFullYear/getUTCFullYear getters directly: which one is
+        // "correct" depends entirely on how that Date was constructed, which this code
+        // has no way to verify. Re-deriving through the day-count instead sidesteps that
+        // — round to the nearest whole day first (in case of any sub-day time
+        // component), then run it through the same verified UTC-safe epoch math as the
+        // numeric branch just below, so both paths agree no matter what produced the
+        // Date object.
+        const wholeDaySerial = Math.round(value.getTime() / 86400000 + 25569);
+        const ms = (wholeDaySerial - 25569) * 86400000;
+        const converted = new Date(ms);
+        meta.date = `${converted.getUTCFullYear()}-${pad(converted.getUTCMonth() + 1)}-${pad(converted.getUTCDate())}`;
       } else if (typeof value === "number" && value > 25000 && value < 60000) {
         // cellDates:true only converts a cell if Excel's own number-format metadata
         // marks it as a date — if that formatting was lost (e.g. a copy-paste-values
@@ -1418,7 +1424,7 @@ function StockTab({ domes }) {
     domes.forEach((d) => {
       const source = d.source || "inventory";
       if (!bySource[source][d.contractor]) {
-        bySource[source][d.contractor] = { total: 0, current: 0, domes: 0, source, niSum: 0, niWeight: 0, unassayed: 0 };
+        bySource[source][d.contractor] = { total: 0, current: 0, domes: 0, source, niSum: 0, niWeight: 0, unassayed: 0, niRemainingSum: 0, niRemainingWeight: 0 };
       }
       const domeTotal = d.initialStock !== undefined ? d.initialStock : d.stock;
       bySource[source][d.contractor].total += domeTotal;
@@ -1432,6 +1438,17 @@ function StockTab({ domes }) {
       } else {
         bySource[source][d.contractor].unassayed += domeTotal;
       }
+      // Separate grade for what's actually LEFT in the domes right now, weighted by
+      // current remaining stock rather than what was originally acquired. These can
+      // genuinely diverge — if barging has consistently drawn from the lowest-Ni domes
+      // first (per the blend engine's own priority rule), the remaining stock trends
+      // toward a higher average Ni than the original acquired blend. A dome that's
+      // already exhausted (stock === 0) correctly drops out of this figure entirely,
+      // same as it drops out of "Actual Remaining" itself.
+      if (d.ni > 0 && d.stock > 0) {
+        bySource[source][d.contractor].niRemainingSum += d.stock * d.ni;
+        bySource[source][d.contractor].niRemainingWeight += d.stock;
+      }
     });
     
     const formatSummary = (sourceData) => 
@@ -1444,6 +1461,7 @@ function StockTab({ domes }) {
           capacityUsed: data.total > 0 ? Math.round(((data.total - data.current) / data.total) * 100) : 0,
           domeCount: data.domes,
           avgNi: data.niWeight > 0 ? data.niSum / data.niWeight : 0,
+          avgNiRemaining: data.niRemainingWeight > 0 ? data.niRemainingSum / data.niRemainingWeight : 0,
           unassayedWMT: data.unassayed
         }))
         .sort((a, b) => a.contractor.localeCompare(b.contractor, undefined, { numeric: true }));
@@ -1542,6 +1560,10 @@ function StockTab({ domes }) {
                   <div className="card-row">
                     <span className="card-label">Actual Remaining</span>
                     <span className="card-value card-highlight">{fmt(c.actualRemaining)} WMT</span>
+                  </div>
+                  <div className="card-row">
+                    <span className="card-label">Remaining Ni Grade</span>
+                    <span className="card-value card-highlight">{fmt(c.avgNiRemaining, 2)}%</span>
                   </div>
                   <div className="card-row">
                     <span className="card-label">Used in Barging</span>
@@ -1735,11 +1757,20 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
     } else {
       const reader = new FileReader();
       reader.onload = (evt) => {
-        // cellDates: true is required — without it, SheetJS returns date-formatted
-        // cells as their raw Excel serial number (e.g. 46244) rather than a JS Date
-        // object, which is exactly why the DATE row was showing as a meaningless number
-        // instead of an actual date.
-        const wb = XLSX.read(new Uint8Array(evt.target.result), { type: "array", cellDates: true });
+        // Deliberately NOT cellDates: true. That asks the xlsx library to convert Excel's
+        // date serial numbers into JS Date objects internally, using whatever epoch-
+        // construction method that library version uses under the hood — which isn't
+        // something this codebase can verify or control. Two independently-plausible
+        // internal implementations were tested by hand here and they disagree on which
+        // getters (local vs UTC) safely read the result back in Asia/Jakarta (WIB):
+        // one wants local getters, the other wants UTC getters, and using the wrong one
+        // silently loses a day, which is exactly the bug this replaces. Leaving cellDates
+        // off means date cells come through as raw serial NUMBERS instead, which
+        // parseBargeComposition's own numeric branch (below) converts using this file's
+        // own verified-correct, timezone-independent math — the same approach already
+        // used to fix the HPM date bug. That removes the dependency on unverifiable
+        // library-internal behavior entirely rather than guessing at it.
+        const wb = XLSX.read(new Uint8Array(evt.target.result), { type: "array" });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
         const comp = parseBargeComposition(rows);
