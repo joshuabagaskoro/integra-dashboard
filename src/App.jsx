@@ -1262,6 +1262,7 @@ function SiteMap({ domes }) {
 /* ----------------------------- Overview tab ----------------------------- */
 
 function OverviewTab({ domes, barges, settings }) {
+  const domesById = useMemo(() => Object.fromEntries(domes.map((d) => [d.id, d])), [domes]);
   const totalExisting = domes.reduce((s, d) => s + d.stock, 0);
   const actualBarged = barges.filter((b) => b.finalized).reduce((s, b) => s + b.totalWMT, 0);
   // "Quota coverage" is fulfillment against the annual barging/shipment quota — what has
@@ -1275,7 +1276,6 @@ function OverviewTab({ domes, barges, settings }) {
   // should show. totalProduced = stock still on hand + stock already barged out captures
   // everything actually produced to date, regardless of where it currently sits.
   const totalProduced = totalExisting + actualBarged;
-  const productionVsQuotaPercent = (totalProduced / settings.totalQuota) * 100;
   const overallNi = totalExisting > 0 ? domes.reduce((s, d) => s + d.stock * d.ni, 0) / totalExisting : 0;
 
   const inventoryStats = useMemo(() => aggregateDomes(domes.filter((d) => d.source === "inventory")), [domes]);
@@ -1284,6 +1284,27 @@ function OverviewTab({ domes, barges, settings }) {
     const contractors = Array.from(new Set(prod.map((d) => d.contractor))).sort();
     return contractors.map((c) => ({ id: c, ...aggregateDomes(prod.filter((d) => d.contractor === c)) }));
   }, [domes]);
+  // Existing stock on hand, split by the DOME database's own source field — same
+  // production/inventory split used everywhere else in the app (Stock overview cards,
+  // the blend engine's production-only candidate pool, etc.) — rather than one combined
+  // "existing stock" figure that blurs which pool ore is actually sitting in.
+  const totalExistingProduction = productionByContractor.reduce((s, c) => s + c.stock, 0);
+  const totalExistingInventory = inventoryStats.stock;
+
+  // Same split, but for tonnage that's already been barged out — cross-referenced from
+  // each finalized barge's per-dome sources against that dome's own source field, so a
+  // barge blended from both inventory and production domes still splits correctly rather
+  // than being bucketed as one or the other as a whole.
+  const bargedBySource = useMemo(() => {
+    let production = 0, inventory = 0;
+    barges.filter((b) => b.finalized).forEach((b) => {
+      (b.sources || []).forEach((s) => {
+        const src = domesById[s.id]?.source || "inventory";
+        if (src === "production") production += s.amt; else inventory += s.amt;
+      });
+    });
+    return { production, inventory };
+  }, [barges, domesById]);
 
   const ungraded = useMemo(() => domes.filter((d) => d.ni <= 0 && d.stock > 0), [domes]);
   const ungradedStock = ungraded.reduce((s, d) => s + d.stock, 0);
@@ -1314,7 +1335,8 @@ function OverviewTab({ domes, barges, settings }) {
           <div className="kpi-row">
             <Kpi label="2026 Quota" value={fmt(settings.totalQuota)} unit="WMT" />
             <Kpi label="Actual barged" value={fmt(actualBarged)} unit="WMT" accent="good" />
-            <Kpi label="Existing stock" value={fmt(totalExisting)} unit="WMT" />
+            <Kpi label="Production stock" value={fmt(totalExistingProduction)} unit="WMT" />
+            <Kpi label="Inventory stock" value={fmt(totalExistingInventory)} unit="WMT" />
             <Kpi label="Quota coverage" value={fmt(quotaCoverage, 1)} unit="%" accent={quotaCoverage >= 100 ? "good" : "warn"} />
           </div>
         </div>
@@ -1325,10 +1347,16 @@ function OverviewTab({ domes, barges, settings }) {
       <section className="glass panel">
         <div className="panel-head"><Gauge size={16} /><span>Total production vs. 2026 quota</span></div>
         <div className="stacked-bar">
-          <div className="stacked-seg" style={{ width: `${Math.min(productionVsQuotaPercent, 100)}%`, background: "#E35F0C" }} />
+          <div className="stacked-seg" style={{ width: `${Math.min((totalExistingProduction / settings.totalQuota) * 100, 100)}%`, background: "#E35F0C" }} title="Production — remaining" />
+          <div className="stacked-seg" style={{ width: `${Math.min((bargedBySource.production / settings.totalQuota) * 100, 100)}%`, background: "#F0964F" }} title="Production — barged" />
+          <div className="stacked-seg" style={{ width: `${Math.min((totalExistingInventory / settings.totalQuota) * 100, 100)}%`, background: "#7C83FD" }} title="Inventory — remaining" />
+          <div className="stacked-seg" style={{ width: `${Math.min((bargedBySource.inventory / settings.totalQuota) * 100, 100)}%`, background: "#B3B8FF" }} title="Inventory — barged" />
         </div>
         <div className="legend">
-          <span className="legend-item"><span className="dot" style={{ background: "#E35F0C" }} />{fmt(totalProduced)} WMT produced ({fmt(totalExisting)} on hand + {fmt(actualBarged)} barged)</span>
+          <span className="legend-item"><span className="dot" style={{ background: "#E35F0C" }} />{fmt(totalExistingProduction)} WMT production, remaining</span>
+          <span className="legend-item"><span className="dot" style={{ background: "#F0964F" }} />{fmt(bargedBySource.production)} WMT production, barged</span>
+          <span className="legend-item"><span className="dot" style={{ background: "#7C83FD" }} />{fmt(totalExistingInventory)} WMT inventory, remaining</span>
+          <span className="legend-item"><span className="dot" style={{ background: "#B3B8FF" }} />{fmt(bargedBySource.inventory)} WMT inventory, barged</span>
           <span className="legend-item"><span className="dot" style={{ background: "#3A4256" }} />{fmt(Math.max(0, settings.totalQuota - totalProduced))} WMT still to be produced</span>
         </div>
       </section>
@@ -5274,7 +5302,7 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .hero-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 20px; }
 .hero-desc { color: #8A97A8; font-size: 13px; margin-top: 4px; margin-bottom: 16px; }
 
-.kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.kpi-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
 .kpi-label { font-size: 11px; color: #8A97A8; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
 .kpi-value { font-family: 'JetBrains Mono', monospace; font-size: 19px; font-weight: 600; }
 .kpi-unit { font-size: 11px; color: #8A97A8; margin-left: 4px; font-family: 'Inter', sans-serif; }
