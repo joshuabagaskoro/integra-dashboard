@@ -372,36 +372,77 @@ function aggregateDomes(list) {
  * Business rules:
  *  1) Prioritize consuming the lowest-Ni domes first.
  *  2) A single barge can draw from any number of existing-inventory contractors,
- *     but at most 2 production contractors (IMN-1..4).
+ *     but at most N production contractors (IMN-1..4), N configurable per generation
+ *     run (default 2, the original hardcoded cap).
+ *  3) Among production contractors beyond the first, prefer ones with domes in the
+ *     same location zone as the anchor contractor's domes (see zoneOf below) — same-
+ *     ground stockpiles are simpler/cheaper to co-load — before reaching into a
+ *     different zone, which remains fine when needed to fill the barge.
  */
 
-// Picks at most 2 production-source contractors to pair for a barge (the historical
-// "2 contractors max" cap now applies only to production ore — see generateFromPool,
-// which layers this on top of an unrestricted set of inventory contractors).
-function pickProductionPair(pool, target) {
+// Extracts the location "zone" from a dome's location string — the segment after the
+// final hyphen, e.g. "UTARA" from "IMN-3-UTARA", "SELATAN" from "IMN-2-SELATAN". This is
+// the attribute that's actually shared ACROSS different contractors (IMN-2-UTARA and
+// IMN-3-UTARA are different full location codes but the same physical-ground zone),
+// which is what makes it useful for prioritizing which second/third production
+// contractor to pair with the anchor. Domes without a recognizable "X-ZONE" suffix (blank
+// location, or free-text from an odd import) simply contribute no zone — they're still
+// perfectly usable, they just don't get the same-zone priority boost.
+function zoneOf(location) {
+  if (!location) return "";
+  const parts = String(location).split("-");
+  return parts.length > 1 ? parts[parts.length - 1].trim().toUpperCase() : "";
+}
+
+// Picks up to `maxCount` production-source contractors to pair for a barge (the
+// historical "2 contractors max" cap is now a caller-supplied parameter — see
+// generateFromPool — rather than hardcoded, and layers on top of an unrestricted set of
+// inventory contractors).
+function pickProductionContractors(pool, target, maxCount = 2) {
   const EPS = 1e-6;
   const cands = pool.filter((p) => p.remaining > EPS && p.grade > 0 && p.source === "production");
   if (!cands.length) return [];
 
   const anchor = cands.reduce((min, c) => (c.grade < min.grade ? c : min), cands[0]);
   const A = anchor.contractor;
+  if (maxCount <= 1) return [A];
+
+  const anchorZones = new Set(cands.filter((c) => c.contractor === A).map((c) => zoneOf(c.location)).filter(Boolean));
 
   const byContractor = {};
   cands.forEach((c) => {
-    if (!byContractor[c.contractor]) byContractor[c.contractor] = { stock: 0, ni: 0 };
+    if (!byContractor[c.contractor]) byContractor[c.contractor] = { stock: 0, ni: 0, zones: new Set() };
     byContractor[c.contractor].stock += c.remaining;
     byContractor[c.contractor].ni += c.remaining * c.grade;
+    const z = zoneOf(c.location);
+    if (z) byContractor[c.contractor].zones.add(z);
   });
+
   const others = Object.entries(byContractor)
     .filter(([cid]) => cid !== A)
-    .map(([cid, v]) => ({ cid, avg: v.ni / v.stock, stock: v.stock }));
+    .map(([cid, v]) => ({ cid, avg: v.ni / v.stock, sameZone: Array.from(v.zones).some((z) => anchorZones.has(z)) }));
 
-  const above = others.filter((o) => o.avg > target).sort((a, b) => (a.avg - target) - (b.avg - target));
-  let B = null;
-  if (above.length) B = above[0].cid;
-  else if (others.length) B = others.sort((a, b) => b.avg - a.avg)[0].cid;
+  // Ranks remaining candidates same-zone-first, then (within each zone tier) by how
+  // close their blended Ni sits above target — mirrors the original single-partner
+  // logic, which preferred the tightest above-target fit to avoid overshooting the
+  // blend — falling back to highest-average-Ni when nothing clears the target at all.
+  const rankNext = (list) => {
+    const above = list.filter((o) => o.avg > target)
+      .sort((a, b) => (a.sameZone !== b.sameZone ? (a.sameZone ? -1 : 1) : (a.avg - target) - (b.avg - target)));
+    if (above.length) return above[0];
+    if (!list.length) return null;
+    return list.slice().sort((a, b) => (a.sameZone !== b.sameZone ? (a.sameZone ? -1 : 1) : b.avg - a.avg))[0];
+  };
 
-  return B && B !== A ? [A, B] : [A];
+  const picked = [A];
+  let pool2 = others;
+  while (picked.length < maxCount && pool2.length) {
+    const next = rankNext(pool2);
+    if (!next) break;
+    picked.push(next.cid);
+    pool2 = pool2.filter((o) => o.cid !== next.cid);
+  }
+  return picked;
 }
 
 // Fills one barge using only domes from the given contractor set. Ni content is bounded
@@ -541,9 +582,9 @@ function statusFor(b, bargeSize, target, tolerance, finalized) {
 
 // Generates `count` new barges from a shared pool (mutates pool.remaining as it goes).
 // Contractor limits differ by source: inventory contractors are unrestricted (a barge
-// can blend across any number of them), while production contractors are still capped
-// at 2 per barge, same as the original rule.
-function generateFromPool(pool, count, bargeSize, target, tolerance, simgTarget) {
+// can blend across any number of them), while production contractors are capped at
+// `maxProdContractors` per barge (default 2, the original hardcoded rule).
+function generateFromPool(pool, count, bargeSize, target, tolerance, simgTarget, maxProdContractors = 2) {
   const EPS = 1e-6;
   const out = [];
   for (let i = 0; i < count; i++) {
@@ -553,8 +594,8 @@ function generateFromPool(pool, count, bargeSize, target, tolerance, simgTarget)
     const inventoryContractors = Array.from(new Set(
       pool.filter((p) => p.remaining > EPS && p.grade > 0 && p.source !== "production").map((p) => p.contractor)
     ));
-    const productionPair = pickProductionPair(pool, target);
-    const allowedList = Array.from(new Set([...inventoryContractors, ...productionPair]));
+    const productionContractors = pickProductionContractors(pool, target, maxProdContractors);
+    const allowedList = Array.from(new Set([...inventoryContractors, ...productionContractors]));
 
     if (!allowedList.length) { out.push({ sources: [], totalWMT: 0, grade: 0, status: "unplanned", pair: null }); continue; }
 
@@ -568,7 +609,7 @@ function generateFromPool(pool, count, bargeSize, target, tolerance, simgTarget)
 }
 
 function poolFromDomes(domes, subtractBarges) {
-  const pool = domes.map((d) => ({ id: d.id, contractor: d.contractor, grade: d.ni, remaining: d.stock, source: d.source || "inventory", simg: d.simg || 0 }));
+  const pool = domes.map((d) => ({ id: d.id, contractor: d.contractor, grade: d.ni, remaining: d.stock, source: d.source || "inventory", simg: d.simg || 0, location: d.location || "" }));
   subtractBarges.forEach((b) => b.sources.forEach((s) => {
     const p = pool.find((x) => x.id === s.id);
     if (p) p.remaining = Math.max(0, p.remaining - s.amt);
@@ -4945,6 +4986,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
   const [genTargetNi, setGenTargetNi] = useState(settings.targetGrade);
   const [genQty, setGenQty] = useState(settings.bargeSize);
   const [genSources, setGenSources] = useState({ inventory: true, production: true });
+  const [genMaxProdContractors, setGenMaxProdContractors] = useState(2);
   const [genSimgOp, setGenSimgOp] = useState("none"); // "none" | "lte" | "gte" — optional, skipped when "none"
   const [genSimgValue, setGenSimgValue] = useState("");
 
@@ -5011,7 +5053,8 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
       // target without ever removing a dome from consideration.
     const target = Number(genTargetNi) || settings.targetGrade;
     const qty = Number(genQty) > 0 ? Number(genQty) : settings.bargeSize;
-    const generated = generateFromPool(genPool, n, qty, target, settings.tolerance, simgTarget);
+    const maxProd = Math.max(1, parseInt(genMaxProdContractors) || 2);
+    const generated = generateFromPool(genPool, n, qty, target, settings.tolerance, simgTarget, maxProd);
     const withNo = generated.map((g, i) => ({ no: start + i, shipDate: defaultShipDate(start + i, settings.planTarget), bargeName: "", tugboatName: "", finalized: false, ...g }));
     setBarges((prev) => [...prev, ...withNo]);
   };
@@ -5105,6 +5148,11 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
               <input type="number" min="1" max="20" value={genCount} onChange={(e) => setGenCount(e.target.value)} />
             </div>
             <div className="gen-field">
+              <label>Max production contractors</label>
+              <input type="number" min="1" max="4" step="1" value={genMaxProdContractors}
+                onChange={(e) => setGenMaxProdContractors(e.target.value)} />
+            </div>
+            <div className="gen-field">
               <label>Targeted Si/Mg (optional)</label>
               <div className="gen-simg-row">
                 <select value={genSimgOp} onChange={(e) => setGenSimgOp(e.target.value)}>
@@ -5119,7 +5167,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
           </div>
           <button className="btn-primary gen-submit" onClick={generateBarges}>Generate suggested plan</button>
         </div>
-        <div className="note">Generation rule: Targeted Ni is a floor and target+0.2% is a ceiling — barges are never blended outside that range. Lowest-Ni domes are used first as diluent. A barge can draw from any number of existing-inventory contractors, but at most 2 production contractors (IMN-1–4). Domes below 1% or above 1.5% Ni are hard to source, so each is capped at 500 WMT per barge (spread across multiple barges instead). Targeted Si/Mg (when set) steers which domes are reached for first — it never excludes a dome, and the resulting barge's actual Si/Mg is shown on its row once generated. If there isn't enough on-spec ore left to reach a full barge within all active constraints, the barge is left incomplete rather than filled out of spec.</div>
+        <div className="note">Generation rule: Targeted Ni is a floor and target+0.2% is a ceiling — barges are never blended outside that range. Lowest-Ni domes are used first as diluent. A barge can draw from any number of existing-inventory contractors, but at most "Max production contractors" production contractors (IMN-1–4, default 2). Beyond the first (lowest-Ni) production contractor, contractors with domes in the same location zone (e.g. UTARA/SELATAN) are preferred before reaching into a different zone. Domes below 1% or above 1.5% Ni are hard to source, so each is capped at 500 WMT per barge (spread across multiple barges instead). Targeted Si/Mg (when set) steers which domes are reached for first — it never excludes a dome, and the resulting barge's actual Si/Mg is shown on its row once generated. If there isn't enough on-spec ore left to reach a full barge within all active constraints, the barge is left incomplete rather than filled out of spec.</div>
       </section>
 
       {barges.length > 0 && (
