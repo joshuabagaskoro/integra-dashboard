@@ -9,7 +9,9 @@
     "react-scripts": "5.0.1",
     "lucide-react": "^0.263.1",
     "papaparse": "^5.4.1",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^2.5.2"
   },
   "scripts": {
     "start": "react-scripts start",
