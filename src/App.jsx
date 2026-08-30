@@ -877,12 +877,16 @@ function reportTableHTML(headers, rows, opts = {}) {
 
 function buildReportPages(reportData) {
   const { metadata, overview, stock, barges, contractors, forecast, alerts } = reportData;
-  const pages = [];
+  // Collect {body, label} pairs first, without wrapping in reportPageShell yet — the
+  // barge table below may span a variable number of pages depending on how many barges
+  // are in the report period, so the total page count (needed for "Page N of TOTAL"
+  // footers) isn't known until every section has been built.
+  const sections = [];
 
-  // ---- Page 1: Cover / Executive Overview ----
+  // ---- Page: Cover / Executive Overview ----
   const contractorRows = Object.entries(stock.byContractor).sort((a, b) => b[1] - a[1])
     .map(([c, s]) => [c, { value: fmt(s), align: "right" }, { value: `${fmt((s / (stock.totalExisting || 1)) * 100, 1)}%`, align: "right" }]);
-  pages.push(reportPageShell(`
+  sections.push({ label: "Executive Overview", body: `
     <h1 style="text-align:center;font-size:26px;margin:0 0 4px;color:#1A1A1A;">IntegraDashboard Operations Report</h1>
     <p style="text-align:center;color:#6B7280;font-size:13px;margin:0 0 22px;">${metadata.period} &nbsp;·&nbsp; Generated ${metadata.generatedAt}</p>
     <div style="display:flex;gap:14px;margin-bottom:22px;">
@@ -896,11 +900,11 @@ function buildReportPages(reportData) {
       [{ label: "Contractor" }, { label: "Stock (WMT)", align: "right" }, { label: "% of Total", align: "right" }],
       contractorRows
     )}
-  `, "Page 1 · Executive Overview"));
+  ` });
 
-  // ---- Page 2: Stock Inventory ----
+  // ---- Page: Stock Inventory ----
   const domeRows = stock.topDomes.map((d) => [d.id, d.contractor, { value: fmt(d.stock), align: "right" }, { value: `${fmt(d.ni, 2)}%`, align: "right" }]);
-  pages.push(reportPageShell(`
+  sections.push({ label: "Stock Inventory", body: `
     <h2 style="font-size:19px;margin:0 0 16px;">Stock Inventory</h2>
     <div style="display:flex;gap:14px;margin-bottom:18px;">
       ${reportKpiCard("Total On Hand", `${fmt(stock.totalExisting)} WMT`, "#E35F0C")}
@@ -929,14 +933,24 @@ function buildReportPages(reportData) {
         )}
       </div>
     </div>
-  `, "Page 2 · Stock Inventory"));
+  ` });
 
-  // ---- Page 3: Barge Operations ----
-  const bargeRows = barges.list.slice(0, 11).map((b) => [
+  // ---- Page(s): Barge Operations — paginated instead of truncated. The first page
+  // carries the KPI cards (so it fits fewer rows); any additional barges spill onto as
+  // many follow-on pages as needed, each holding more rows since there's no KPI strip
+  // eating into the vertical space. Every finalized barge in the period appears
+  // somewhere — nothing is silently dropped, unlike the original fixed 11-row cap.
+  const bargeHeaders = [{ label: "Barge" }, { label: "Date" }, { label: "WMT", align: "right" }, { label: "Grade", align: "right" }, { label: "Contractor Mix" }];
+  const allBargeRows = barges.list.map((b) => [
     `#${b.no}`, b.shipDate, { value: fmt(b.totalWMT), align: "right" }, { value: `${fmt(b.grade, 2)}%`, align: "right" },
     b.contractorContribution.map((c) => `${c.contractor}: ${fmt(c.pct, 0)}%`).join(" · "),
   ]);
-  pages.push(reportPageShell(`
+  const FIRST_PAGE_ROWS = 11, OVERFLOW_PAGE_ROWS = 20;
+  const overflowCount = Math.max(0, Math.ceil((allBargeRows.length - FIRST_PAGE_ROWS) / OVERFLOW_PAGE_ROWS));
+  const bargePageCount = 1 + overflowCount;
+  const bargePageTag = bargePageCount > 1 ? ` (1/${bargePageCount})` : "";
+
+  sections.push({ label: `Barge Operations${bargePageTag}`, body: `
     <h2 style="font-size:19px;margin:0 0 16px;">Barge Operations — ${metadata.period}</h2>
     <div style="display:flex;gap:14px;margin-bottom:18px;">
       ${reportKpiCard("Barges Finalized", `${barges.count}`, "#E35F0C")}
@@ -944,13 +958,24 @@ function buildReportPages(reportData) {
       ${reportKpiCard("Avg Grade", `${fmt(barges.avgGrade, 2)}%`, "#60A5FA")}
       ${reportKpiCard("Off-Spec", `${barges.statusBreakdown.deficit + barges.statusBreakdown.excess}`, "#FBBF24")}
     </div>
-    <h3 style="font-size:13px;margin:0 0 4px;">Barges This Period ${barges.list.length > 11 ? `(showing 11 of ${barges.list.length})` : ""}</h3>
-    ${bargeRows.length
-      ? reportTableHTML([{ label: "Barge" }, { label: "Date" }, { label: "WMT", align: "right" }, { label: "Grade", align: "right" }, { label: "Contractor Mix" }], bargeRows, { fontSize: 11 })
+    <h3 style="font-size:13px;margin:0 0 4px;">Barges This Period${bargePageCount > 1 ? ` — page 1 of ${bargePageCount}` : ""}</h3>
+    ${allBargeRows.length
+      ? reportTableHTML(bargeHeaders, allBargeRows.slice(0, FIRST_PAGE_ROWS), { fontSize: 11 })
       : `<p style="color:#6B7280;font-size:12px;">No finalized barges in this period.</p>`}
-  `, "Page 3 · Barge Operations"));
+  ` });
 
-  // ---- Page 4: Contractor Performance ----
+  for (let i = 0; i < overflowCount; i++) {
+    const start = FIRST_PAGE_ROWS + i * OVERFLOW_PAGE_ROWS;
+    const chunk = allBargeRows.slice(start, start + OVERFLOW_PAGE_ROWS);
+    const pageNum = i + 2;
+    sections.push({ label: `Barge Operations (${pageNum}/${bargePageCount})`, body: `
+      <h2 style="font-size:19px;margin:0 0 16px;">Barge Operations — ${metadata.period} (continued)</h2>
+      <h3 style="font-size:13px;margin:0 0 4px;">Barges This Period — page ${pageNum} of ${bargePageCount}</h3>
+      ${reportTableHTML(bargeHeaders, chunk, { fontSize: 11 })}
+    ` });
+  }
+
+  // ---- Page: Contractor Performance ----
   const contractorPerfRows = Object.entries(contractors).map(([name, m]) => [
     name,
     { value: fmt(m.targetWMT), align: "right" },
@@ -960,7 +985,7 @@ function buildReportPages(reportData) {
     { value: `${fmt(m.actualNi, 2)}%`, align: "right" },
     { value: m.domeCount, align: "right" },
   ]);
-  pages.push(reportPageShell(`
+  sections.push({ label: "Contractor Performance", body: `
     <h2 style="font-size:19px;margin:0 0 20px;">Contractor Performance</h2>
     ${reportTableHTML(
       [{ label: "Contractor" }, { label: "Target WMT", align: "right" }, { label: "Produced WMT", align: "right" },
@@ -968,10 +993,10 @@ function buildReportPages(reportData) {
       contractorPerfRows
     )}
     <p style="font-size:11px;color:#9CA3AF;margin-top:14px;">"Produced WMT" = current stock on hand + tonnage already shipped on finalized barges, cross-referenced from each barge's per-dome composition.</p>
-  `, "Page 4 · Contractor Performance"));
+  ` });
 
-  // ---- Page 5: Forecast & Alerts ----
-  pages.push(reportPageShell(`
+  // ---- Page: Forecast & Alerts ----
+  sections.push({ label: "Forecast & Status", body: `
     <h2 style="font-size:19px;margin:0 0 20px;">Forecast & Status</h2>
     ${reportTableHTML(
       [{ label: "Metric" }, { label: "Value", align: "right" }],
@@ -987,10 +1012,10 @@ function buildReportPages(reportData) {
       ? `<p style="color:#4ADE80;font-size:12px;">✓ No issues detected for this period.</p>`
       : alerts.map((a) => `<div style="padding:9px 12px;margin:6px 0;border-left:4px solid ${a.severity === "high" ? "#F87171" : a.severity === "medium" ? "#FBBF24" : "#60A5FA"};
           background:${a.severity === "high" ? "#FEE2E2" : a.severity === "medium" ? "#FFFBEB" : "#EFF6FF"};font-size:12px;border-radius:4px;">${a.message}</div>`).join("")}
-  `, "Page 5 · Forecast & Status"));
+  ` });
 
-  // ---- Page 6: Appendix ----
-  pages.push(reportPageShell(`
+  // ---- Page: Appendix ----
+  sections.push({ label: "Appendix", body: `
     <h2 style="font-size:19px;margin:0 0 20px;">Appendix</h2>
     <h3 style="font-size:13px;margin:0 0 8px;">Report Metadata</h3>
     <p style="font-size:12px;color:#4B5563;line-height:2;">
@@ -1008,9 +1033,10 @@ function buildReportPages(reportData) {
       <strong>Total Produced:</strong> Stock currently on hand + tonnage already barged — everything mined to date, regardless of where it currently sits<br>
       <strong>On-spec:</strong> Barge grade within the site's target tolerance band
     </p>
-  `, "Page 6 · Appendix"));
+  ` });
 
-  return pages;
+  const total = sections.length;
+  return sections.map((s, i) => reportPageShell(s.body, `Page ${i + 1} of ${total} · ${s.label}`));
 }
 
 async function exportReportPDF(reportData) {
