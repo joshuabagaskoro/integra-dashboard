@@ -291,6 +291,61 @@ function sheetValueToDateStr(value) {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
+/* Date-range math for the operations report generator (below). Every function here is
+ * built exclusively on Date.UTC() for construction AND getUTC*() for reading back — never
+ * a local constructor or toISOString() — for the same reason as sheetValueToDateStr and
+ * todayLocalStr above: mixing local and UTC operations is exactly what caused the WIB
+ * off-by-one bugs fixed elsewhere in this file. Report periods are calendar concepts
+ * (whole months/quarters), not moments in time, so they don't need "current local
+ * instant" at all — pure UTC day-count arithmetic is both simpler and immune to any
+ * runtime timezone, which is why this uses UTC throughout rather than todayLocalStr()'s
+ * local-getter approach (that one's specifically for "what day is it right now, here").
+ */
+function pad2(n) { return String(n).padStart(2, "0"); }
+function dateStrFromUTC(y, m1to12, d) { return `${y}-${pad2(m1to12)}-${pad2(d)}`; }
+function daysInMonthUTC(year, month1to12) {
+  // Day 0 of month N = the last day of month N-1 — a well-defined, timezone-independent
+  // calendar operation since it never leaves whole-day granularity.
+  return new Date(Date.UTC(year, month1to12, 0)).getUTCDate();
+}
+function daysBetweenDateStrs(startStr, endStr) {
+  const [y1, m1, d1] = startStr.split("-").map(Number);
+  const [y2, m2, d2] = endStr.split("-").map(Number);
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+}
+function addDaysToDateStr(dateStr, days) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d) + days * 86400000);
+  return dateStrFromUTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+}
+// Resolves a report period preset into a concrete {start, end, label}. `todayStr` is
+// passed in (always todayLocalStr() from the caller) rather than read internally, so
+// there's a single source of truth for "today" and no risk of two different notions of
+// "now" disagreeing inside one report.
+function resolveReportPeriod(preset, todayStr, customStart, customEnd) {
+  const [ty, tm, td] = todayStr.split("-").map(Number);
+  if (preset === "thisMonth") {
+    return { start: dateStrFromUTC(ty, tm, 1), end: dateStrFromUTC(ty, tm, daysInMonthUTC(ty, tm)), label: `${MONTHS[tm - 1]} ${ty}` };
+  }
+  if (preset === "lastMonth") {
+    const y = tm === 1 ? ty - 1 : ty, m = tm === 1 ? 12 : tm - 1;
+    return { start: dateStrFromUTC(y, m, 1), end: dateStrFromUTC(y, m, daysInMonthUTC(y, m)), label: `${MONTHS[m - 1]} ${y}` };
+  }
+  if (preset === "thisQuarter") {
+    const q = Math.floor((tm - 1) / 3); // 0-3
+    const startMonth = q * 3 + 1, endMonth = startMonth + 2;
+    return { start: dateStrFromUTC(ty, startMonth, 1), end: dateStrFromUTC(ty, endMonth, daysInMonthUTC(ty, endMonth)), label: `Q${q + 1} ${ty}` };
+  }
+  if (preset === "ytd") {
+    return { start: dateStrFromUTC(ty, 1, 1), end: todayStr, label: `Year to Date ${ty}` };
+  }
+  if (preset === "allTime") {
+    return { start: "2000-01-01", end: todayStr, label: "All Time" };
+  }
+  // custom
+  return { start: customStart, end: customEnd, label: `${customStart} – ${customEnd}` };
+}
+
 function reconcileStock(domeId, grossInitialStock, barges) {
   const used = barges
     .filter((b) => b.finalized)
@@ -615,6 +670,389 @@ function poolFromDomes(domes, subtractBarges) {
     if (p) p.remaining = Math.max(0, p.remaining - s.amt);
   }));
   return pool;
+}
+
+/* ----------------------------- operations report ----------------------------- *
+ * Builds the data behind the presentation-style PDF report (Settings > Reports). Every
+ * figure here deliberately reuses the SAME corrected formulas already established
+ * elsewhere in this file, rather than recomputing similar-but-subtly-different versions:
+ *   - "Quota coverage" is actual barged tonnage over the quota (not stock on hand — see
+ *     OverviewTab for why stock-on-hand alone understates real progress).
+ *   - Stock is split by each dome's own `source` field (production vs existing
+ *     inventory), not lumped into one figure.
+ *   - Contractor performance compares against PRODUCTION_TARGETS_2026 using each
+ *     contractor's TOTAL production to date (current stock + already-barged), not just
+ *     what's currently sitting in a dome — the same totalProduced logic as the Overview
+ *     tab, applied per contractor instead of site-wide.
+ */
+function buildOperationsReport(domes, barges, settings, period, contractorFilter) {
+  const { start, end, label } = period;
+  const domesById = Object.fromEntries(domes.map((d) => [d.id, d]));
+  const finalizedBarges = barges.filter((b) => b.finalized);
+  const bargesInPeriod = finalizedBarges.filter((b) => b.shipDate >= start && b.shipDate <= end);
+
+  // null/empty contractorFilter = every contractor (production + existing inventory).
+  const filterActive = Array.isArray(contractorFilter) && contractorFilter.length > 0;
+  const filteredDomes = domes.filter((d) => !filterActive || contractorFilter.includes(d.contractor));
+
+  const totalExisting = filteredDomes.reduce((s, d) => s + d.stock, 0);
+  const totalExistingProduction = filteredDomes.filter((d) => d.source === "production").reduce((s, d) => s + d.stock, 0);
+  const totalExistingInventory = filteredDomes.filter((d) => (d.source || "inventory") === "inventory").reduce((s, d) => s + d.stock, 0);
+  const overallNi = totalExisting > 0 ? filteredDomes.reduce((s, d) => s + d.stock * d.ni, 0) / totalExisting : 0;
+
+  // Actual barged: ALL finalized barges to date (not period-filtered), attributable to
+  // the filtered contractor set via each barge's own per-dome sources — same running
+  // year-to-date concept as the Overview tab's "Quota coverage" KPI, cross-referenced
+  // against domesById the same way as OverviewTab's bargedBySource.
+  const actualBargedFiltered = finalizedBarges.reduce((sum, b) => {
+    const bargeTotal = (b.sources || []).reduce((s, src) => {
+      const dome = domesById[src.id];
+      if (!dome) return s;
+      if (filterActive && !contractorFilter.includes(dome.contractor)) return s;
+      return s + src.amt;
+    }, 0);
+    return sum + bargeTotal;
+  }, 0);
+  const totalProduced = totalExisting + actualBargedFiltered;
+  const quotaCoverage = settings.totalQuota > 0 ? (actualBargedFiltered / settings.totalQuota) * 100 : 0;
+
+  // Period-scoped shipping activity (distinct from the running quotaCoverage above).
+  const bargesInPeriodFiltered = bargesInPeriod.filter((b) => {
+    if (!filterActive) return true;
+    return (b.sources || []).some((src) => domesById[src.id] && contractorFilter.includes(domesById[src.id].contractor));
+  });
+  const wmtShippedThisPeriod = bargesInPeriodFiltered.reduce((sum, b) => {
+    if (!filterActive) return sum + b.totalWMT;
+    return sum + (b.sources || []).reduce((s, src) => {
+      const dome = domesById[src.id];
+      return dome && contractorFilter.includes(dome.contractor) ? s + src.amt : s;
+    }, 0);
+  }, 0);
+  const avgGradeThisPeriod = bargesInPeriodFiltered.length > 0
+    ? bargesInPeriodFiltered.reduce((s, b) => s + b.totalWMT * b.grade, 0) / bargesInPeriodFiltered.reduce((s, b) => s + b.totalWMT, 0)
+    : 0;
+
+  // --- stock by contractor (for the table + pie) ---
+  const stockByContractor = {};
+  filteredDomes.forEach((d) => { stockByContractor[d.contractor] = (stockByContractor[d.contractor] || 0) + d.stock; });
+
+  // --- top 10 domes by current stock ---
+  const topDomes = filteredDomes.slice().sort((a, b) => b.stock - a.stock).slice(0, 10);
+
+  // --- grade bands, using the same 1% / 1.5% extreme-grade thresholds already
+  // established in the blend engine (EXTREME_GRADE_CAP), plus the site's own target
+  // grade as the midpoint, rather than an arbitrary hardcoded 1.35 that would silently
+  // go stale if the target changes. ---
+  const targetGrade = settings.targetGrade;
+  const gradeBands = {
+    low: filteredDomes.filter((d) => d.ni > 0 && d.ni < 1).reduce((s, d) => s + d.stock, 0),
+    mid1: filteredDomes.filter((d) => d.ni >= 1 && d.ni < targetGrade).reduce((s, d) => s + d.stock, 0),
+    mid2: filteredDomes.filter((d) => d.ni >= targetGrade && d.ni < 1.5).reduce((s, d) => s + d.stock, 0),
+    high: filteredDomes.filter((d) => d.ni >= 1.5).reduce((s, d) => s + d.stock, 0),
+  };
+
+  // --- lab data status — non-overlapping buckets (every dome falls in exactly one) ---
+  const labFields = (d) => [d.ni, d.fe, d.co, d.sio2, d.mgo, d.simg];
+  const labStatus = { fullyAssayed: 0, partial: 0, pending: 0 };
+  filteredDomes.forEach((d) => {
+    const nonZero = labFields(d).filter((f) => f > 0).length;
+    if (nonZero === 0) labStatus.pending++;
+    else if (nonZero === 6) labStatus.fullyAssayed++;
+    else labStatus.partial++;
+  });
+
+  // --- barges this period, with per-contractor % breakdown ---
+  const bargesList = bargesInPeriodFiltered.map((b) => {
+    const byContractor = {};
+    (b.sources || []).forEach((src) => {
+      const dome = domesById[src.id];
+      if (!dome) return;
+      if (filterActive && !contractorFilter.includes(dome.contractor)) return;
+      byContractor[dome.contractor] = (byContractor[dome.contractor] || 0) + src.amt;
+    });
+    const total = Object.values(byContractor).reduce((s, v) => s + v, 0) || 1;
+    const contractorContribution = Object.entries(byContractor)
+      .sort((a, b2) => b2[1] - a[1])
+      .map(([contractor, wmt]) => ({ contractor, wmt, pct: (wmt / total) * 100 }));
+    return { no: b.no, shipDate: b.shipDate, tugboat: b.tugboatName, totalWMT: b.totalWMT, grade: b.grade, status: b.status, contractorContribution };
+  }).sort((a, b) => (a.shipDate < b.shipDate ? 1 : -1));
+
+  const statusBreakdown = {
+    exact: bargesInPeriodFiltered.filter((b) => b.status === "exact").length,
+    deficit: bargesInPeriodFiltered.filter((b) => b.status === "deficit").length,
+    excess: bargesInPeriodFiltered.filter((b) => b.status === "excess").length,
+    incomplete: bargesInPeriodFiltered.filter((b) => b.status === "incomplete").length,
+  };
+
+  // --- contractor performance vs PRODUCTION_TARGETS_2026, using totalProduced (stock +
+  // already-barged) per contractor rather than stock alone — same fix as the site-wide
+  // totalProduced figure above, applied per contractor. ---
+  const contractorMetrics = {};
+  Object.keys(PRODUCTION_TARGETS_2026).forEach((c) => {
+    if (filterActive && !contractorFilter.includes(c)) return;
+    const target = PRODUCTION_TARGETS_2026[c];
+    const contractorDomes = domes.filter((d) => d.contractor === c);
+    const stock = contractorDomes.reduce((s, d) => s + d.stock, 0);
+    const barged = finalizedBarges.reduce((sum, b) => sum + (b.sources || []).reduce((s, src) => {
+      const dome = domesById[src.id];
+      return dome && dome.contractor === c ? s + src.amt : s;
+    }, 0), 0);
+    const produced = stock + barged;
+    const actualNi = stock > 0 ? contractorDomes.reduce((s, d) => s + d.stock * d.ni, 0) / stock : 0;
+    contractorMetrics[c] = {
+      targetWMT: target.targetWMT, targetNi: target.targetNi,
+      producedWMT: produced, actualNi,
+      domeCount: contractorDomes.length,
+      progressPct: target.targetWMT > 0 ? (produced / target.targetWMT) * 100 : 0,
+    };
+  });
+
+  // --- forecast: rate of shipment over the reporting period, projected to the quota ---
+  const remaining = Math.max(0, settings.totalQuota - totalProduced);
+  const daysInRange = Math.max(1, daysBetweenDateStrs(start, end) + 1);
+  const ratePerDay = wmtShippedThisPeriod / daysInRange;
+  const daysToCompletion = ratePerDay > 0 ? Math.ceil(remaining / ratePerDay) : null;
+  const projectedCompletion = daysToCompletion !== null ? addDaysToDateStr(end, daysToCompletion) : null;
+  const onTrack = daysToCompletion !== null && daysToCompletion <= 120;
+
+  // --- alerts ---
+  const alerts = [];
+  const unassayed = filteredDomes.filter((d) => d.ni <= 0 && d.stock > 0);
+  if (unassayed.length) alerts.push({ severity: "medium", message: `${unassayed.length} dome(s) totaling ${fmt(unassayed.reduce((s, d) => s + d.stock, 0))} WMT have no Ni lab result yet` });
+  const offSpec = bargesInPeriodFiltered.filter((b) => b.status === "deficit" || b.status === "excess");
+  if (offSpec.length) alerts.push({ severity: "low", message: `${offSpec.length} barge(s) off-spec this period` });
+  Object.entries(contractorMetrics).forEach(([name, m]) => {
+    const diff = m.actualNi - m.targetNi;
+    if (m.domeCount > 0 && Math.abs(diff) > 0.2) {
+      alerts.push({ severity: "medium", message: `${name} grade ${diff > 0 ? "above" : "below"} target by ${fmt(Math.abs(diff), 2)}%` });
+    }
+  });
+
+  return {
+    metadata: { period: label, dateRange: { start, end }, generatedAt: todayLocalStr(), dataLastUpdated: DATA_LAST_UPDATED },
+    overview: { quotaCoverage, totalQuota: settings.totalQuota, totalProduced, totalExistingProduction, totalExistingInventory, overallNi, bargesCompletedThisPeriod: bargesInPeriodFiltered.length, wmtShippedThisPeriod, avgGradeThisPeriod },
+    stock: { totalExisting, byContractor: stockByContractor, gradeBands, topDomes, labStatus, targetGrade },
+    barges: { list: bargesList, statusBreakdown, count: bargesInPeriodFiltered.length, totalWMT: wmtShippedThisPeriod, avgGrade: avgGradeThisPeriod },
+    contractors: contractorMetrics,
+    forecast: { totalProduced, remaining, daysToCompletion, projectedCompletion, onTrack, ratePerDay },
+    alerts,
+  };
+}
+
+/* ----------------------------- report PDF export -----------------------------
+ * Renders the report as a set of fixed-size landscape "slides" (A4 landscape proportions,
+ * ~1120x792px at html2canvas's capture scale) — presentation-oriented per the brief,
+ * landscape ONLY, no portrait option. Each slide is captured as its own canvas rather
+ * than rendering one tall document and slicing it into page-height chunks: slicing a
+ * single canvas risks cutting a table row in half right at a page boundary, which is
+ * avoided entirely by giving each slide a fixed height up front and never letting content
+ * overflow it (tables here are capped to a row count verified to fit).
+ */
+const REPORT_PAGE_W = 1120, REPORT_PAGE_H = 792; // px, ~297x210mm at 96dpi-ish scale
+
+function reportKpiCard(label, value, color) {
+  return `<div style="border:1px solid #E2E5EA;border-radius:10px;padding:14px 16px;background:#FAFAFA;flex:1;">
+    <div style="font-size:11px;color:#6B7280;margin-bottom:6px;letter-spacing:.04em;text-transform:uppercase;">${label}</div>
+    <div style="font-size:24px;font-weight:700;color:${color};font-family:'Courier New',monospace;">${value}</div>
+  </div>`;
+}
+function reportPageShell(bodyHTML, pageLabel, footerNote) {
+  return `<div style="width:${REPORT_PAGE_W}px;height:${REPORT_PAGE_H}px;background:#ffffff;box-sizing:border-box;
+      padding:44px 52px 20px;font-family:Arial,Helvetica,sans-serif;color:#1A1A1A;position:relative;overflow:hidden;">
+    ${bodyHTML}
+    <div style="position:absolute;bottom:20px;left:52px;right:52px;display:flex;justify-content:space-between;
+      font-size:10px;color:#9CA3AF;border-top:1px solid #E5E7EB;padding-top:8px;">
+      <span>${footerNote || "IntegraDashboard — Operations Report"}</span>
+      <span>${pageLabel}</span>
+    </div>
+  </div>`;
+}
+function reportTableHTML(headers, rows, opts = {}) {
+  const th = headers.map((h) => `<th style="border:1px solid #E2E5EA;padding:7px 9px;text-align:${h.align || "left"};background:#F3F4F6;font-size:11px;">${h.label}</th>`).join("");
+  const tr = rows.map((row) => `<tr>${row.map((cell, i) => `<td style="border:1px solid #E2E5EA;padding:7px 9px;text-align:${headers[i]?.align || "left"};font-size:${opts.fontSize || 12}px;${cell.style || ""}">${typeof cell === "object" ? cell.value : cell}</td>`).join("")}</tr>`).join("");
+  return `<table style="width:100%;border-collapse:collapse;margin-top:8px;"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
+}
+
+function buildReportPages(reportData) {
+  const { metadata, overview, stock, barges, contractors, forecast, alerts } = reportData;
+  const pages = [];
+
+  // ---- Page 1: Cover / Executive Overview ----
+  const contractorRows = Object.entries(stock.byContractor).sort((a, b) => b[1] - a[1])
+    .map(([c, s]) => [c, { value: fmt(s), align: "right" }, { value: `${fmt((s / (stock.totalExisting || 1)) * 100, 1)}%`, align: "right" }]);
+  pages.push(reportPageShell(`
+    <h1 style="text-align:center;font-size:26px;margin:0 0 4px;color:#1A1A1A;">IntegraDashboard Operations Report</h1>
+    <p style="text-align:center;color:#6B7280;font-size:13px;margin:0 0 22px;">${metadata.period} &nbsp;·&nbsp; Generated ${metadata.generatedAt}</p>
+    <div style="display:flex;gap:14px;margin-bottom:22px;">
+      ${reportKpiCard("Quota Coverage", `${fmt(overview.quotaCoverage, 1)}%`, "#E35F0C")}
+      ${reportKpiCard("Total Produced", `${fmt(overview.totalProduced)} WMT`, "#4ADE80")}
+      ${reportKpiCard("Production Stock", `${fmt(overview.totalExistingProduction)} WMT`, "#60A5FA")}
+      ${reportKpiCard("Inventory Stock", `${fmt(overview.totalExistingInventory)} WMT`, "#818CF8")}
+    </div>
+    <h3 style="font-size:14px;margin:0 0 4px;">Stock on Hand by Contractor</h3>
+    ${reportTableHTML(
+      [{ label: "Contractor" }, { label: "Stock (WMT)", align: "right" }, { label: "% of Total", align: "right" }],
+      contractorRows
+    )}
+  `, "Page 1 · Executive Overview"));
+
+  // ---- Page 2: Stock Inventory ----
+  const domeRows = stock.topDomes.map((d) => [d.id, d.contractor, { value: fmt(d.stock), align: "right" }, { value: `${fmt(d.ni, 2)}%`, align: "right" }]);
+  pages.push(reportPageShell(`
+    <h2 style="font-size:19px;margin:0 0 16px;">Stock Inventory</h2>
+    <div style="display:flex;gap:14px;margin-bottom:18px;">
+      ${reportKpiCard("Total On Hand", `${fmt(stock.totalExisting)} WMT`, "#E35F0C")}
+      ${reportKpiCard("Fully Assayed", `${stock.labStatus.fullyAssayed} domes`, "#4ADE80")}
+      ${reportKpiCard("Partially Assayed", `${stock.labStatus.partial} domes`, "#FBBF24")}
+      ${reportKpiCard("Pending", `${stock.labStatus.pending} domes`, "#F87171")}
+    </div>
+    <div style="display:flex;gap:28px;">
+      <div style="flex:1.3;">
+        <h3 style="font-size:13px;margin:0 0 4px;">Top 10 Domes by Stock</h3>
+        ${reportTableHTML(
+          [{ label: "Dome ID" }, { label: "Contractor" }, { label: "Stock (WMT)", align: "right" }, { label: "Ni %", align: "right" }],
+          domeRows, { fontSize: 11 }
+        )}
+      </div>
+      <div style="flex:1;">
+        <h3 style="font-size:13px;margin:0 0 4px;">Stock by Grade Band</h3>
+        ${reportTableHTML(
+          [{ label: "Band" }, { label: "WMT", align: "right" }],
+          [
+            ["< 1% Ni", { value: fmt(stock.gradeBands.low), align: "right" }],
+            [`1% – ${fmt(stock.targetGrade, 2)}%`, { value: fmt(stock.gradeBands.mid1), align: "right" }],
+            [`${fmt(stock.targetGrade, 2)}% – 1.5%`, { value: fmt(stock.gradeBands.mid2), align: "right" }],
+            ["≥ 1.5% Ni", { value: fmt(stock.gradeBands.high), align: "right" }],
+          ]
+        )}
+      </div>
+    </div>
+  `, "Page 2 · Stock Inventory"));
+
+  // ---- Page 3: Barge Operations ----
+  const bargeRows = barges.list.slice(0, 11).map((b) => [
+    `#${b.no}`, b.shipDate, { value: fmt(b.totalWMT), align: "right" }, { value: `${fmt(b.grade, 2)}%`, align: "right" },
+    b.contractorContribution.map((c) => `${c.contractor}: ${fmt(c.pct, 0)}%`).join(" · "),
+  ]);
+  pages.push(reportPageShell(`
+    <h2 style="font-size:19px;margin:0 0 16px;">Barge Operations — ${metadata.period}</h2>
+    <div style="display:flex;gap:14px;margin-bottom:18px;">
+      ${reportKpiCard("Barges Finalized", `${barges.count}`, "#E35F0C")}
+      ${reportKpiCard("WMT Shipped", `${fmt(barges.totalWMT)} WMT`, "#4ADE80")}
+      ${reportKpiCard("Avg Grade", `${fmt(barges.avgGrade, 2)}%`, "#60A5FA")}
+      ${reportKpiCard("Off-Spec", `${barges.statusBreakdown.deficit + barges.statusBreakdown.excess}`, "#FBBF24")}
+    </div>
+    <h3 style="font-size:13px;margin:0 0 4px;">Barges This Period ${barges.list.length > 11 ? `(showing 11 of ${barges.list.length})` : ""}</h3>
+    ${bargeRows.length
+      ? reportTableHTML([{ label: "Barge" }, { label: "Date" }, { label: "WMT", align: "right" }, { label: "Grade", align: "right" }, { label: "Contractor Mix" }], bargeRows, { fontSize: 11 })
+      : `<p style="color:#6B7280;font-size:12px;">No finalized barges in this period.</p>`}
+  `, "Page 3 · Barge Operations"));
+
+  // ---- Page 4: Contractor Performance ----
+  const contractorPerfRows = Object.entries(contractors).map(([name, m]) => [
+    name,
+    { value: fmt(m.targetWMT), align: "right" },
+    { value: fmt(m.producedWMT), align: "right" },
+    { value: `${fmt(m.progressPct, 1)}%`, align: "right", style: `background:${m.progressPct >= 100 ? "#D4F5D4" : "#FFF4D4"};` },
+    { value: `${fmt(m.targetNi, 2)}%`, align: "right" },
+    { value: `${fmt(m.actualNi, 2)}%`, align: "right" },
+    { value: m.domeCount, align: "right" },
+  ]);
+  pages.push(reportPageShell(`
+    <h2 style="font-size:19px;margin:0 0 20px;">Contractor Performance</h2>
+    ${reportTableHTML(
+      [{ label: "Contractor" }, { label: "Target WMT", align: "right" }, { label: "Produced WMT", align: "right" },
+       { label: "Progress", align: "right" }, { label: "Target Ni%", align: "right" }, { label: "Actual Ni%", align: "right" }, { label: "Domes", align: "right" }],
+      contractorPerfRows
+    )}
+    <p style="font-size:11px;color:#9CA3AF;margin-top:14px;">"Produced WMT" = current stock on hand + tonnage already shipped on finalized barges, cross-referenced from each barge's per-dome composition.</p>
+  `, "Page 4 · Contractor Performance"));
+
+  // ---- Page 5: Forecast & Alerts ----
+  pages.push(reportPageShell(`
+    <h2 style="font-size:19px;margin:0 0 20px;">Forecast & Status</h2>
+    ${reportTableHTML(
+      [{ label: "Metric" }, { label: "Value", align: "right" }],
+      [
+        ["Total Produced (to date)", { value: `${fmt(forecast.totalProduced)} WMT`, align: "right" }],
+        ["Remaining to Quota", { value: `${fmt(forecast.remaining)} WMT`, align: "right" }],
+        ["Shipping Rate (this period)", { value: `${fmt(forecast.ratePerDay, 0)} WMT/day`, align: "right" }],
+        ["Projected Completion", { value: forecast.projectedCompletion ? `${forecast.projectedCompletion} (${forecast.daysToCompletion}d) ${forecast.onTrack ? "✓ ON TRACK" : "⚠ BEHIND"}` : "No shipments this period — cannot project", align: "right" }],
+      ]
+    )}
+    <h3 style="font-size:13px;margin:22px 0 8px;">Alerts & Issues</h3>
+    ${alerts.length === 0
+      ? `<p style="color:#4ADE80;font-size:12px;">✓ No issues detected for this period.</p>`
+      : alerts.map((a) => `<div style="padding:9px 12px;margin:6px 0;border-left:4px solid ${a.severity === "high" ? "#F87171" : a.severity === "medium" ? "#FBBF24" : "#60A5FA"};
+          background:${a.severity === "high" ? "#FEE2E2" : a.severity === "medium" ? "#FFFBEB" : "#EFF6FF"};font-size:12px;border-radius:4px;">${a.message}</div>`).join("")}
+  `, "Page 5 · Forecast & Status"));
+
+  // ---- Page 6: Appendix ----
+  pages.push(reportPageShell(`
+    <h2 style="font-size:19px;margin:0 0 20px;">Appendix</h2>
+    <h3 style="font-size:13px;margin:0 0 8px;">Report Metadata</h3>
+    <p style="font-size:12px;color:#4B5563;line-height:2;">
+      <strong>Period:</strong> ${metadata.period}<br>
+      <strong>Date Range:</strong> ${metadata.dateRange.start} to ${metadata.dateRange.end}<br>
+      <strong>Generated:</strong> ${metadata.generatedAt}<br>
+      <strong>Dome Data Last Updated:</strong> ${metadata.dataLastUpdated}<br>
+      <strong>Source:</strong> IntegraDashboard (Google Sheets)
+    </p>
+    <h3 style="font-size:13px;margin:22px 0 8px;">Key Definitions</h3>
+    <p style="font-size:12px;color:#4B5563;line-height:2;">
+      <strong>WMT:</strong> Wet Metric Tonne<br>
+      <strong>Ni%:</strong> Nickel content, weighted by tonnage<br>
+      <strong>Quota Coverage:</strong> Total tonnage actually barged out, as a % of the 2026 quota<br>
+      <strong>Total Produced:</strong> Stock currently on hand + tonnage already barged — everything mined to date, regardless of where it currently sits<br>
+      <strong>On-spec:</strong> Barge grade within the site's target tolerance band
+    </p>
+  `, "Page 6 · Appendix"));
+
+  return pages;
+}
+
+async function exportReportPDF(reportData) {
+  const html2canvas = (await import("html2canvas")).default;
+  const { jsPDF } = await import("jspdf");
+  const pages = buildReportPages(reportData);
+
+  const container = document.createElement("div");
+  container.style.position = "fixed";
+  container.style.left = "-99999px";
+  container.style.top = "0";
+  document.body.appendChild(container);
+
+  try {
+    const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+    const PAGE_W_MM = 297, PAGE_H_MM = 210; // A4 landscape
+
+    for (let i = 0; i < pages.length; i++) {
+      const pageEl = document.createElement("div");
+      pageEl.innerHTML = pages[i];
+      container.innerHTML = "";
+      container.appendChild(pageEl.firstElementChild);
+
+      const canvas = await html2canvas(container.firstElementChild, { scale: 2, useCORS: true, logging: false, backgroundColor: "#ffffff" });
+      const imgData = canvas.toDataURL("image/png");
+      // Each page is authored at the exact REPORT_PAGE_W/H aspect ratio (matches A4
+      // landscape), so this should already fit — the clamp is just a safety net rather
+      // than the primary sizing mechanism, unlike the brief's slice-a-tall-canvas
+      // approach which relied on it for correctness.
+      let w = PAGE_W_MM, h = (canvas.height * w) / canvas.width;
+      if (h > PAGE_H_MM) { h = PAGE_H_MM; w = (canvas.width * h) / canvas.height; }
+      const x = (PAGE_W_MM - w) / 2, y = (PAGE_H_MM - h) / 2;
+
+      if (i > 0) pdf.addPage();
+      pdf.addImage(imgData, "PNG", x, y, w, h);
+    }
+
+    const safePeriod = reportData.metadata.period.replace(/[^a-zA-Z0-9]+/g, "-");
+    const filename = `Integra-Operations-Report-${safePeriod}-${todayLocalStr()}.pdf`;
+    pdf.save(filename);
+    return { success: true, filename };
+  } finally {
+    document.body.removeChild(container);
+  }
 }
 
 /* ----------------------------- import parsing ----------------------------- */
@@ -2537,7 +2975,93 @@ function SubFeatureConfiguration({ allUsers, allDetailedFlags, onSave }) {
   );
 }
 
-function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus, allUsers, allFeatureFlags, setAllUsers, setAllFeatureFlags, writeUsersToSheets, writeFeatureFlagsToSheets, allDetailedFlags, setAllDetailedFlags, writeDetailedFeatureFlagsToSheets, isFeatureEnabled }) {
+/* Report generator UI, embedded in Settings > Reports (admin only). Deliberately a plain
+ * form rather than the natural-language chat-command parser sketched in the original
+ * brief — the app's "Chat Assistant" is actually a single-purpose loading-report paste
+ * modal, not a conversational UI with message history, so there's nothing to hang free-
+ * text report requests off of. A form with real period presets and a real contractor
+ * picker is also just more reliable than regex-parsing phrases like "Q3 report" — it
+ * can't misparse, and it reuses the exact same MultiSelectDropdown already used for the
+ * barge-plan generator elsewhere in this app. */
+function ReportGeneratorPanel({ domes, barges, settings }) {
+  const { showToast } = useUIFeedback();
+  const [preset, setPreset] = useState("thisMonth");
+  const [customStart, setCustomStart] = useState(todayLocalStr());
+  const [customEnd, setCustomEnd] = useState(todayLocalStr());
+  const [contractorFilter, setContractorFilter] = useState(null); // null = all
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const allContractors = useMemo(() => Array.from(new Set(domes.map((d) => d.contractor))).sort(), [domes]);
+
+  const handleGenerate = async () => {
+    if (preset === "custom" && (!customStart || !customEnd || customStart > customEnd)) {
+      showToast("Pick a valid custom date range (start on or before end)", "warning");
+      return;
+    }
+    setIsGenerating(true);
+    try {
+      const period = resolveReportPeriod(preset, todayLocalStr(), customStart, customEnd);
+      const reportData = buildOperationsReport(domes, barges, settings, period, contractorFilter);
+      const result = await exportReportPDF(reportData);
+      showToast(`Report ready — ${result.filename}`, "success", 7000);
+    } catch (err) {
+      console.error("Report generation error:", err);
+      showToast("Report generation failed: " + err.message, "error", 8000);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-header">
+        <h3>Reports</h3>
+        <span className="section-badge">Admin Only</span>
+      </div>
+      <div className="settings-card" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
+        <div className="card-content">
+          <h4>Generate Operations Report</h4>
+          <p>A 6-page landscape PDF — overview, stock, barges, contractor performance, forecast, and appendix — sized for presenting, not printing.</p>
+        </div>
+        <div className="gen-form-grid">
+          <div className="gen-field">
+            <label>Period</label>
+            <select value={preset} onChange={(e) => setPreset(e.target.value)}>
+              <option value="thisMonth">This month</option>
+              <option value="lastMonth">Last month</option>
+              <option value="thisQuarter">This quarter</option>
+              <option value="ytd">Year to date</option>
+              <option value="allTime">All time</option>
+              <option value="custom">Custom range</option>
+            </select>
+          </div>
+          {preset === "custom" && (
+            <>
+              <div className="gen-field">
+                <label>Start date</label>
+                <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} />
+              </div>
+              <div className="gen-field">
+                <label>End date</label>
+                <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} />
+              </div>
+            </>
+          )}
+          <div className="gen-field">
+            <label>Contractors</label>
+            <MultiSelectDropdown options={allContractors} selected={contractorFilter} onChange={setContractorFilter}
+              allLabel="All contractors" noneLabel="No contractors" />
+          </div>
+        </div>
+        <button className="btn-primary gen-submit" onClick={handleGenerate} disabled={isGenerating} style={{ marginTop: 4 }}>
+          {isGenerating ? "Generating…" : "Generate PDF Report"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleSheets, syncWithSheets, sheetsSyncStatus, lastSyncTime, lastSyncError, exRateFetchStatus, allUsers, allFeatureFlags, setAllUsers, setAllFeatureFlags, writeUsersToSheets, writeFeatureFlagsToSheets, allDetailedFlags, setAllDetailedFlags, writeDetailedFeatureFlagsToSheets, isFeatureEnabled, domes, barges, settings }) {
   const { showToast } = useUIFeedback();
   return (
     <div className="stack">
@@ -2645,6 +3169,8 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
             </div>
           </div>
         )}
+
+        {isAdmin && <ReportGeneratorPanel domes={domes} barges={barges} settings={settings} />}
 
         <div className="settings-section">
           <div className="settings-section-header"><h3>Account</h3></div>
@@ -4971,7 +5497,7 @@ function IntegraDashboardInner() {
             allUsers={allUsers} allFeatureFlags={allFeatureFlags} setAllUsers={setAllUsers} setAllFeatureFlags={setAllFeatureFlags}
             writeUsersToSheets={writeUsersToSheets} writeFeatureFlagsToSheets={writeFeatureFlagsToSheets}
             allDetailedFlags={allDetailedFlags} setAllDetailedFlags={setAllDetailedFlags} writeDetailedFeatureFlagsToSheets={writeDetailedFeatureFlagsToSheets}
-            isFeatureEnabled={isFeatureEnabled} />
+            isFeatureEnabled={isFeatureEnabled} domes={domes} barges={barges} settings={settings} />
         )}
       </main>
     </div>
@@ -5511,6 +6037,9 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .gen-field label { font-size: 11px; color: #8A97A8; font-weight: 600; }
 .gen-field input[type="number"] { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); border-radius: 8px;
   color: #EAF0F6; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; padding: 7px 10px; width: 100%; box-sizing: border-box; }
+.gen-field select, .gen-field input[type="date"] { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); border-radius: 8px;
+  color: #EAF0F6; font-size: 12.5px; padding: 7px 10px; width: 100%; box-sizing: border-box; }
+.gen-field select option { background: #171E29; color: #EAF0F6; }
 .gen-source-checks { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
 .gen-simg-row { display: flex; gap: 6px; }
 .gen-simg-row select { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); border-radius: 8px;
