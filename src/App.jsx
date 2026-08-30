@@ -6,6 +6,8 @@ import {
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 
 /* ----------------------------- constants ----------------------------- */
 
@@ -1012,8 +1014,6 @@ function buildReportPages(reportData) {
 }
 
 async function exportReportPDF(reportData) {
-  const html2canvas = (await import("html2canvas")).default;
-  const { jsPDF } = await import("jspdf");
   const pages = buildReportPages(reportData);
 
   const container = document.createElement("div");
