@@ -1249,6 +1249,171 @@ function parseBargeComposition(rows) {
   return { ...meta, sources };
 }
 
+/* ------------------------- REKAP_RITASE barge-plan import -------------------------
+ * A second source format for the same "Import final plan for this barge" button, used by
+ * the hauling/ops team's daily ritase recap (REKAP RITASE HAULING PEMUATAN TONGKANG) rather
+ * than the dashboard's own Barge Composition template. Three structural differences from
+ * parseBargeComposition's format, all handled below:
+ *   1. Dome IDs are written in a different convention (e.g. "DOME 128/BLOK S/IMN 1/2026"
+ *      instead of this dashboard's "ID.128/BLOK.S/IMN 01/2026") and need translating before
+ *      they'll match anything in domesById — see translateRekapDomeId.
+ *   2. The same Dome ID can appear on multiple rows (once per shift/day it was loaded from),
+ *      so rows are summed by translated Dome ID rather than kept as separate source rows.
+ *   3. Tugboat/barge name are embedded together in one free-text row ("TB. AVENGERS 10 -
+ *      BG. ANWARI"), and the ship date is the Date value on the first "Day 1" row rather
+ *      than a single explicit date field.
+ * PDF uploads of this same recap are intentionally NOT supported here (by Josh's call) —
+ * only .xlsx. */
+
+// Extracts the first run of digits (plus an immediately-following single letter, e.g.
+// "047B") from a dome ID / dome code string. Used only as the fuzzy-match fallback below,
+// for irregular dome entries that don't follow the numbered BLOK/IMN naming convention at
+// all (e.g. "DM 319 A", a legacy/manual stockpile entry) and so can't be translated by
+// pattern — matched instead by the dome number they share with an existing Stock-tab ID.
+function domeNumberToken(id) {
+  const m = String(id).match(/(\d+)([A-Za-z])?/);
+  if (!m) return null;
+  return m[1] + (m[2] ? m[2].toUpperCase() : "");
+}
+
+// Builds a numberToken -> [domeId, ...] index once per import (not per row) so the fuzzy
+// fallback in translateRekapDomeId can do an O(1) lookup instead of re-scanning domesById
+// for every unmatched row.
+function buildDomeNumberTokenIndex(domesById) {
+  const idx = {};
+  Object.keys(domesById).forEach((id) => {
+    const token = domeNumberToken(id);
+    if (!token) return;
+    (idx[token] = idx[token] || []).push(id);
+  });
+  return idx;
+}
+
+// Translates a REKAP_RITASE "Dome Code" cell into this dashboard's canonical Dome ID.
+// Two tiers:
+//   1. Pattern translation for the standard numbered-block naming scheme — e.g.
+//      "DOME 047B/BLOK U/IMN 2/2026" -> "ID.047B/BLOK.U/IMN 02/2026", and
+//      "DOME 002/BLOK U/KLM/IMN 2/2026" -> "ID.002/BLOK.U.KLM/IMN 02/2026" (the BLOK
+//      segment's own internal "/" becomes "." in the canonical form).
+//   2. A fuzzy numeric-token fallback for irregular/manual dome entries that don't follow
+//      the BLOK/IMN pattern (e.g. "DOME 201/IMN-RAHMAT" or "DOME 201/IMN", both really the
+//      dashboard's plain "DOME 201"; "DOME 319/IMN-AMR", really "DM 319 A") — there's no
+//      formula for these, so they're matched by the shared dome number instead, and only
+//      when that number maps to exactly one existing Stock-tab ID (an ambiguous number is
+//      left untranslated and surfaced as an unknown ID rather than guessed at).
+function translateRekapDomeId(rawCode, domesById, numberTokenIndex) {
+  const raw = String(rawCode).trim();
+  if (domesById[raw]) return raw; // already matches as-is, no translation needed
+
+  const m = raw.match(/^DOME\s+(\S+)\/BLOK\s+(.+?)\/IMN\s+(\d+)\/(\d{4})$/i);
+  if (m) {
+    const [, num, blockParts, imnNum, year] = m;
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const candidate = `ID.${num}/BLOK.${blockParts.split("/").map((p) => p.trim()).join(".")}/IMN ${pad2(imnNum)}/${year}`;
+    if (domesById[candidate]) return candidate;
+  }
+
+  const token = domeNumberToken(raw);
+  if (token && numberTokenIndex[token] && numberTokenIndex[token].length === 1) {
+    return numberTokenIndex[token][0];
+  }
+  return raw; // unresolved — surfaced to the user as an unknown ID like any other miss
+}
+
+const REKAP_MONTH_IDX = {
+  jan: 0, feb: 1, mar: 2, apr: 3, mei: 4, may: 4, jun: 5, jul: 6,
+  agu: 7, aug: 7, sep: 8, okt: 9, oct: 9, nov: 10, des: 11, dec: 11,
+};
+
+// REKAP_RITASE's Date column is plain text ("20 Sep 2026"), not an Excel date serial —
+// no WIB epoch-math concerns here, just a month-name lookup (covers both Indonesian and
+// English month abbreviations, since either can show up depending on who filled it in).
+function parseRekapRitaseDate(str) {
+  const m = String(str).trim().match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})$/);
+  if (!m) return null;
+  const monIdx = REKAP_MONTH_IDX[m[2].slice(0, 3).toLowerCase()];
+  if (monIdx === undefined) return null;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${m[3]}-${pad(monIdx + 1)}-${pad(parseInt(m[1], 10))}`;
+}
+
+// Quick format sniff so the existing "Import final plan" button can accept either file
+// type without the user having to pick which template they're uploading.
+function looksLikeRekapRitase(rows) {
+  for (let i = 0; i < Math.min(rows.length, 6); i++) {
+    const joined = (rows[i] || []).map((c) => String(c || "")).join(" ").toLowerCase();
+    if (joined.includes("rekap ritase")) return true;
+  }
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const cells = (rows[i] || []).map((c) => String(c || "").toLowerCase().trim());
+    if (cells.some((c) => c === "day" || c === "hari") && cells.some((c) => c.includes("dome")) && cells.some((c) => c === "ton")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function parseRekapRitase(rows, domesById) {
+  if (!rows.length) return { date: null, bargeName: null, tugboatName: null, sources: [] };
+
+  let bargeName = null, tugboatName = null;
+  for (let i = 0; i < Math.min(rows.length, 6); i++) {
+    const joined = (rows[i] || []).map((c) => String(c || "")).join(" ").trim();
+    const tb = joined.match(/TB\.?\s*([^-]+?)\s*-\s*BG\.?\s*(.+)$/i);
+    if (tb) {
+      tugboatName = `TB. ${tb[1].trim()}`;
+      bargeName = `BG. ${tb[2].trim()}`;
+      break;
+    }
+  }
+
+  let headerRowIdx = -1, dayIdx = -1, dateIdx = -1, domeIdx = -1, tonIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const cells = (rows[i] || []).map((c) => String(c || "").toLowerCase().trim());
+    const fDay = cells.findIndex((c) => c === "day" || c === "hari");
+    const fDate = cells.findIndex((c) => c === "date" || c === "tanggal");
+    const fDome = cells.findIndex((c) => c.includes("dome"));
+    const fTon = cells.findIndex((c) => c === "ton");
+    if (fDay !== -1 && fDome !== -1 && fTon !== -1) {
+      headerRowIdx = i; dayIdx = fDay; dateIdx = fDate; domeIdx = fDome; tonIdx = fTon;
+      break;
+    }
+  }
+  if (headerRowIdx === -1) return { date: null, bargeName, tugboatName, sources: [] };
+
+  const numberTokenIndex = buildDomeNumberTokenIndex(domesById);
+  const totals = new Map(); // translated Dome ID -> summed Ton, per requirement #2
+  let day1Date = null;
+  let lastDay = null, lastDate = null; // carries Day/Date forward across any blank/merged rows
+
+  for (let i = headerRowIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const dayCell = row[dayIdx];
+    const dateCell = dateIdx !== -1 ? row[dateIdx] : undefined;
+    if (dayCell !== undefined && dayCell !== "" && dayCell !== null) lastDay = dayCell;
+    if (dateCell !== undefined && dateCell !== "" && dateCell !== null) lastDate = dateCell;
+
+    const domeRaw = row[domeIdx];
+    if (!domeRaw) continue; // TOTAL / GRAND TOTAL / blank rows have no Dome Code
+    const label = String(domeRaw).trim().toLowerCase();
+    if (!label || label === "total" || label.includes("grand total")) continue;
+
+    const ton = cleanEuroNum(row[tonIdx]);
+    if (ton <= 0) continue;
+
+    const canonical = translateRekapDomeId(domeRaw, domesById, numberTokenIndex);
+    totals.set(canonical, (totals.get(canonical) || 0) + ton);
+
+    if (day1Date === null && String(lastDay).trim() === "1" && lastDate) {
+      day1Date = parseRekapRitaseDate(lastDate) || String(lastDate).trim();
+    }
+  }
+
+  const sources = Array.from(totals.entries()).map(([domeId, amt]) => ({ domeId, amt }));
+  return { date: day1Date, bargeName, tugboatName, sources };
+}
+
 /* ------------------------- in-app feedback (toasts, confirm, prompt) -------------------------
  * Replaces every window.alert()/confirm()/prompt() call in this file. Native browser dialogs
  * can't be styled to match the app's dark glass UI, block the whole tab while open, and are
@@ -2285,8 +2450,12 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
         // semicolon convention) — try semicolon first since that matches the rest of
         // this project's files, then fall back to comma if that finds no usable header.
         let rows = Papa.parse(evt.target.result, { skipEmptyLines: true, delimiter: ";" }).data;
-        let comp = parseBargeComposition(rows);
-        if (!comp.sources.length) {
+        if (!looksLikeRekapRitase(rows)) {
+          const commaRows = Papa.parse(evt.target.result, { skipEmptyLines: true, delimiter: "," }).data;
+          if (looksLikeRekapRitase(commaRows)) rows = commaRows;
+        }
+        let comp = looksLikeRekapRitase(rows) ? parseRekapRitase(rows, domesById) : parseBargeComposition(rows);
+        if (!comp.sources.length && !looksLikeRekapRitase(rows)) {
           rows = Papa.parse(evt.target.result, { skipEmptyLines: true, delimiter: "," }).data;
           comp = parseBargeComposition(rows);
         }
@@ -2312,7 +2481,10 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
         const wb = XLSX.read(new Uint8Array(evt.target.result), { type: "array" });
         const sheet = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-        const comp = parseBargeComposition(rows);
+        // REKAP_RITASE (the hauling team's daily recap) and this dashboard's own Barge
+        // Composition template share the same "Import final plan" button — sniff which one
+        // this file is and parse accordingly (see looksLikeRekapRitase for the detection).
+        const comp = looksLikeRekapRitase(rows) ? parseRekapRitase(rows, domesById) : parseBargeComposition(rows);
         applyImportedComposition(comp);
       };
       reader.readAsArrayBuffer(file);
@@ -2438,7 +2610,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
               </div>
               {isFeatureEnabled("Barging_CreateExcel", true) && (
                 <label className="import-barge-label">
-                  <FileUp size={13} /> Import final plan for this barge (.xlsx / .csv)
+                  <FileUp size={13} /> Import final plan for this barge (.xlsx / .csv, or a REKAP_RITASE .xlsx)
                   <input type="file" accept=".xlsx,.csv" onChange={handleFileImport} />
                 </label>
               )}
