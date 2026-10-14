@@ -2052,8 +2052,30 @@ function OverviewTab({ domes, barges, settings }) {
 
 /* ----------------------------- Stock tab ----------------------------- */
 
-function StockTab({ domes }) {
+function StockTab({ domes, barges = [] }) {
   const [search, setSearch] = useState("");
+  const [bargeFilter, setBargeFilter] = useState("all"); // "all" or a barge number
+  const [showExhausted, setShowExhausted] = useState(false);
+
+  // Dome -> which barges it's allocated to, so "which barge is this dome in?" is answerable
+  // right on the Stock tab. Includes draft/planned barges (not just finalized ones) since
+  // that's exactly when you need to check for double-booking; `finalized` lets the UI tell
+  // them apart (finalized = already deducted from stock, planned = not yet).
+  const bargeUsageByDome = useMemo(() => {
+    const m = {};
+    (barges || []).forEach((b) => {
+      (b.sources || []).forEach((s) => {
+        if (!(s.amt > 0)) return;
+        (m[s.id] = m[s.id] || []).push({ no: b.no, amt: s.amt, finalized: !!b.finalized });
+      });
+    });
+    Object.values(m).forEach((list) => list.sort((a, b) => a.no - b.no));
+    return m;
+  }, [barges]);
+  const bargeNumbersInUse = useMemo(
+    () => Array.from(new Set((barges || []).filter((b) => (b.sources || []).length > 0).map((b) => b.no))).sort((a, b) => a - b),
+    [barges]
+  );
   const [contractorFilter, setContractorFilter] = useState(null); // null = all; [] = none; [ids] = subset
   const [sourceFilter, setSourceFilter] = useState("all");
   const [sortKey, setSortKey] = useState("stock");
@@ -2082,7 +2104,12 @@ function StockTab({ domes }) {
       // Explicitly does NOT apply to a dome that's never been touched by a barge: a
       // genuinely small untouched dome is real inventory, not barging leftovers.
       const isExhaustedDregs = hasBeenBarged && d.stock < MIN_USABLE_STOCK_WMT;
-      return d.stock > 0 && !isExhaustedDregs &&
+      const inSelectedBarge = bargeFilter === "all" || (bargeUsageByDome[d.id] || []).some((u) => String(u.no) === String(bargeFilter));
+      // Exhausted domes are normally hidden, but they're exactly the ones you need when
+      // tracing a finished barge, so they're shown when filtering by barge or when the
+      // "Include exhausted" box is ticked.
+      const visibleStock = showExhausted || bargeFilter !== "all" ? true : (d.stock > 0 && !isExhaustedDregs);
+      return visibleStock && inSelectedBarge &&
         (contractorFilter === null || contractorFilter.includes(d.contractor)) &&
         (sourceFilter === "all" || d.source === sourceFilter) &&
         (search === "" || d.id.toLowerCase().includes(search.toLowerCase()) || d.contractor.toLowerCase().includes(search.toLowerCase()));
@@ -2093,7 +2120,7 @@ function StockTab({ domes }) {
     });
     rows = [...rows].sort((a, b) => (a[sortKey] > b[sortKey] ? 1 : -1) * sortDir);
     return rows;
-  }, [domes, search, contractorFilter, sourceFilter, sortKey, sortDir]);
+  }, [domes, search, contractorFilter, sourceFilter, sortKey, sortDir, bargeFilter, showExhausted, bargeUsageByDome]);
 
   const totalStock = filtered.reduce((s, d) => s + d.stock, 0);
 
@@ -2353,6 +2380,13 @@ function StockTab({ domes }) {
             <option value="inventory">Existing inventory</option>
             <option value="production">Production</option>
           </select>
+          <select value={bargeFilter} onChange={(e) => setBargeFilter(e.target.value)} title="Show only domes loaded in a specific barge">
+            <option value="all">All barges</option>
+            {bargeNumbersInUse.map((n) => <option key={n} value={n}>Barge {String(n).padStart(2, "0")} only</option>)}
+          </select>
+          <label className="check-inline">
+            <input type="checkbox" checked={showExhausted} onChange={(e) => setShowExhausted(e.target.checked)} /> Include exhausted
+          </label>
         </div>
         <div className="table-meta">{filtered.length} domes · {fmt(totalStock)} WMT remaining (live — reflects finalized barges)</div>
 
@@ -2378,7 +2412,7 @@ function StockTab({ domes }) {
                 <Th k="id">Dome ID</Th><Th k="contractor">Contractor</Th>
                 <Th k="initialStock">Initial Stock</Th><Th k="stockOut">Stock Out (Barged)</Th><Th k="stock">Current Stock (WMT)</Th>
                 <Th k="ni">Ni %</Th><Th k="fe">Fe %</Th><Th k="co">CO %</Th><Th k="sio2">SiO2 %</Th>
-                <Th k="mgo">MgO %</Th><Th k="al2o3">Al2O3 %</Th><Th k="simg">Si/Mg</Th><Th k="location">Location</Th>
+                <Th k="mgo">MgO %</Th><Th k="al2o3">Al2O3 %</Th><Th k="simg">Si/Mg</Th><Th k="location">Location</Th><th>In Barges</th>
               </tr>
             </thead>
             <tbody>
@@ -2391,11 +2425,23 @@ function StockTab({ domes }) {
                   <td>{fmt(d.stock)}</td><td>{fmt(d.ni, 2)}</td><td>{fmt(d.fe, 2)}</td><td>{fmt(d.co, 3)}</td>
                   <td>{fmt(d.sio2, 2)}</td><td>{fmt(d.mgo, 2)}</td><td>{fmt(d.al2o3, 2)}</td><td>{fmt(d.simg, 2)}</td>
                   <td>{d.location || "—"}</td>
+                  <td>
+                    <div className="barge-chip-list">
+                      {(bargeUsageByDome[d.id] || []).map((u) => (
+                        <span key={u.no} className={`barge-chip ${u.finalized ? "barge-chip-final" : "barge-chip-plan"}`}
+                          title={`Barge ${u.no} — ${fmt(u.amt)} WMT (${u.finalized ? "finalized, deducted from stock" : "planned, not yet finalized"})`}>
+                          #{u.no} · {fmt(u.amt)}
+                        </span>
+                      ))}
+                      {!(bargeUsageByDome[d.id] || []).length && "—"}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        <div className="note" style={{ margin: "8px 0 0" }}>In Barges: <span className="barge-chip barge-chip-final">#N · WMT</span> = finalized barge (already deducted from stock), <span className="barge-chip barge-chip-plan">#N · WMT</span> = planned, not yet finalized.</div>
       </section>
     </div>
   );
@@ -5675,7 +5721,7 @@ function IntegraDashboardInner() {
 
       <main className="content">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
-        {tab === "stock" && userFeatures.stock && <StockTab domes={domes} />}
+        {tab === "stock" && userFeatures.stock && <StockTab domes={domes} barges={barges} />}
         {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
         {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} isFeatureEnabled={isFeatureEnabled} dismissedLoadingBarges={dismissedLoadingBarges} dismissLoadingBarge={dismissLoadingBarge} />}
         {tab === "financials" && isAdmin && userFeatures.financials && (
@@ -6151,6 +6197,11 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .data-table th.sortable:hover { color: #E35F0C; }
 .data-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.05); color: #D6DDE6; white-space: nowrap; }
 .cell-stockout { color: #E35F0C !important; font-weight: 600; }
+.barge-chip-list { display: flex; flex-wrap: wrap; gap: 4px; min-width: 120px; }
+.barge-chip { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.barge-chip-final { background: rgba(227,95,12,.18); color: #E35F0C; }
+.barge-chip-plan { background: rgba(120,160,255,.16); color: #8fb0ff; border: 1px dashed rgba(143,176,255,.5); }
+.check-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; opacity: .85; cursor: pointer; }
 .data-table tr:hover td { background: rgba(255,255,255,.02); }
 .data-table-compact td, .data-table-compact th { padding: 6px 8px; font-size: 11.5px; }
 
