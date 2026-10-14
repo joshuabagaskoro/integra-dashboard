@@ -2108,7 +2108,10 @@ function StockTab({ domes, barges = [] }) {
       // Exhausted domes are normally hidden, but they're exactly the ones you need when
       // tracing a finished barge, so they're shown when filtering by barge or when the
       // "Include exhausted" box is ticked.
-      const visibleStock = showExhausted || bargeFilter !== "all" ? true : (d.stock > 0 && !isExhaustedDregs);
+      // Even then, only domes that really held stock (or are in a barge) qualify —
+      // zero-initial-stock placeholder rows were never stock to begin with, so they stay hidden.
+      const everHadStock = initialStock > 0 || (bargeUsageByDome[d.id] || []).length > 0;
+      const visibleStock = (d.stock > 0 && !isExhaustedDregs) || ((showExhausted || bargeFilter !== "all") && everHadStock);
       return visibleStock && inSelectedBarge &&
         (contractorFilter === null || contractorFilter.includes(d.contractor)) &&
         (sourceFilter === "all" || d.source === sourceFilter) &&
