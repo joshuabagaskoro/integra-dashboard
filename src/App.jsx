@@ -2000,12 +2000,28 @@ function GradeTierCard({ domes, barges, settings, detailed = false }) {
     () => Object.entries(byContractor).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true })),
     [byContractor]
   );
+  // Stock tab (detailed) version: whole card can be minimized, and the by-contractor
+  // table sits behind its own button. Starts open, contractor detail starts hidden.
+  const [open, setOpen] = useState(true);
+  const [showContractors, setShowContractors] = useState(false);
   const assayed = tiers.low.stock + tiers.medium.stock + tiers.high.stock;
   const highShare = assayed > 0 ? (tiers.high.stock / assayed) * 100 : 0;
 
   return (
     <section className="glass panel">
-      <div className="panel-head"><Gauge size={16} /><span>Stock by grade tier</span></div>
+      <div className={`panel-head ${detailed ? "panel-head-collapsible" : ""}`}
+        onClick={detailed ? () => setOpen(!open) : undefined}
+        style={detailed ? { cursor: "pointer" } : undefined}
+        role={detailed ? "button" : undefined} aria-expanded={detailed ? open : undefined}>
+        <Gauge size={16} /><span>Stock by grade tier</span>
+        {detailed && (
+          <>
+            {!open && <span className="grade-collapsed-hint">{GRADE_TIERS.filter((t) => t.key !== "unassayed").map((t) => `${t.label.split(" ")[0]} ${fmt(tiers[t.key].pct, 0)}%`).join(" · ")}</span>}
+            <ChevronDown size={18} style={{ marginLeft: "auto", transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 200ms ease" }} />
+          </>
+        )}
+      </div>
+      {(!detailed || open) && (<>
       <div className="table-meta">
         {fmt(total)} WMT remaining · Low &lt; {GRADE_LOW_MAX}% · Medium {GRADE_LOW_MAX}–{GRADE_HIGH_MIN}% · High &gt; {GRADE_HIGH_MIN}% Ni
       </div>
@@ -2067,6 +2083,11 @@ function GradeTierCard({ domes, barges, settings, detailed = false }) {
             {" "}Planned = tonnage allocated to barges that aren't finalized yet; Free = remaining minus planned.
           </div>
 
+          <button className="btn-ghost grade-detail-btn" onClick={() => setShowContractors(!showContractors)} aria-expanded={showContractors}>
+            <ChevronDown size={14} style={{ transform: showContractors ? "rotate(180deg)" : "none", transition: "transform 200ms ease" }} />
+            {showContractors ? "Hide" : "View"} grade tier by contractor
+          </button>
+          {showContractors && (<>
           <div className="grade-sub-head">Grade tier by contractor (WMT remaining)</div>
           <div className="table-wrap">
             <table className="data-table data-table-compact">
@@ -2094,8 +2115,10 @@ function GradeTierCard({ domes, barges, settings, detailed = false }) {
               </tbody>
             </table>
           </div>
+          </>)}
         </>
       )}
+      </>)}
     </section>
   );
 }
@@ -6382,6 +6405,8 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .grade-tier-row span { opacity: .65; }
 .grade-sub-head { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; opacity: .7; margin: 14px 0 6px; }
 .stacked-bar-mini { height: 8px; margin: 0; }
+.grade-collapsed-hint { margin-left: 12px; font-size: 12px; font-weight: 500; opacity: .65; }
+.grade-detail-btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; }
 .barge-chip-list { display: flex; flex-wrap: wrap; gap: 4px; min-width: 120px; }
 .barge-chip { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .barge-chip-final { background: rgba(227,95,12,.18); color: #E35F0C; }
