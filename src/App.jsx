@@ -1931,6 +1931,175 @@ function SiteMap({ domes }) {
 
 /* ----------------------------- Overview tab ----------------------------- */
 
+/* ----------------------------- Stock by grade tier -----------------------------
+ * Splits remaining stock into Low / Medium / High Ni tiers (plus an "Unassayed" bucket for
+ * 0% Ni domes that have no lab result yet, so they don't silently inflate the Low tier).
+ * Boundaries: Low < 1.2, Medium 1.2 to 1.5 inclusive on both ends, High > 1.5. Same
+ * "exhausted dregs" exclusion as the Stock tab so totals match what that table shows. */
+const GRADE_LOW_MAX = 1.2;
+const GRADE_HIGH_MIN = 1.5;
+const GRADE_TIERS = [
+  { key: "low", label: "Low grade", range: `< ${GRADE_LOW_MAX}% Ni`, color: "#5BA8FF" },
+  { key: "medium", label: "Medium grade", range: `${GRADE_LOW_MAX}–${GRADE_HIGH_MIN}% Ni`, color: "#F0B429" },
+  { key: "high", label: "High grade", range: `> ${GRADE_HIGH_MIN}% Ni`, color: "#E35F0C" },
+  { key: "unassayed", label: "Unassayed", range: "0% Ni, no lab result", color: "#6B7388" },
+];
+function gradeTierOf(ni) {
+  if (!(ni > 0)) return "unassayed";
+  if (ni < GRADE_LOW_MAX) return "low";
+  if (ni <= GRADE_HIGH_MIN) return "medium";
+  return "high";
+}
+
+function computeGradeTiers(domes, barges, bargeSize) {
+  const blank = () => ({ stock: 0, domes: 0, niSum: 0, barged: 0, planned: 0 });
+  const tiers = { low: blank(), medium: blank(), high: blank(), unassayed: blank() };
+  const byContractor = {}; // contractor -> { low, medium, high, unassayed (WMT), total }
+  const domesById = {};
+  domes.forEach((d) => { domesById[d.id] = d; });
+
+  domes.forEach((d) => {
+    const initial = d.initialStock !== undefined ? d.initialStock : d.stock;
+    const dregs = initial > d.stock && d.stock < MIN_USABLE_STOCK_WMT;
+    if (!(d.stock > 0) || dregs) return;
+    const k = gradeTierOf(d.ni);
+    tiers[k].stock += d.stock;
+    tiers[k].domes += 1;
+    tiers[k].niSum += d.stock * d.ni;
+    const c = (byContractor[d.contractor] = byContractor[d.contractor] || { low: 0, medium: 0, high: 0, unassayed: 0, total: 0, source: d.source });
+    c[k] += d.stock;
+    c.total += d.stock;
+  });
+
+  (barges || []).forEach((b) => {
+    (b.sources || []).forEach((src) => {
+      const d = domesById[src.id];
+      if (!d || !(src.amt > 0)) return;
+      const k = gradeTierOf(d.ni);
+      if (b.finalized) tiers[k].barged += src.amt; else tiers[k].planned += src.amt;
+    });
+  });
+
+  const total = Object.values(tiers).reduce((s, t) => s + t.stock, 0);
+  const totalBarged = Object.values(tiers).reduce((s, t) => s + t.barged, 0);
+  Object.values(tiers).forEach((t) => {
+    t.avgNi = t.stock > 0 && t.niSum > 0 ? t.niSum / t.stock : 0;
+    t.pct = total > 0 ? (t.stock / total) * 100 : 0;
+    t.bargedPct = totalBarged > 0 ? (t.barged / totalBarged) * 100 : 0;
+    t.free = Math.max(0, t.stock - t.planned);
+    t.bargeEq = bargeSize > 0 ? t.stock / bargeSize : 0;
+  });
+  return { tiers, total, totalBarged, byContractor };
+}
+
+function GradeTierCard({ domes, barges, settings, detailed = false }) {
+  const { tiers, total, totalBarged, byContractor } = useMemo(
+    () => computeGradeTiers(domes, barges, settings.bargeSize), [domes, barges, settings.bargeSize]
+  );
+  const contractorRows = useMemo(
+    () => Object.entries(byContractor).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true })),
+    [byContractor]
+  );
+  const assayed = tiers.low.stock + tiers.medium.stock + tiers.high.stock;
+  const highShare = assayed > 0 ? (tiers.high.stock / assayed) * 100 : 0;
+
+  return (
+    <section className="glass panel">
+      <div className="panel-head"><Gauge size={16} /><span>Stock by grade tier</span></div>
+      <div className="table-meta">
+        {fmt(total)} WMT remaining · Low &lt; {GRADE_LOW_MAX}% · Medium {GRADE_LOW_MAX}–{GRADE_HIGH_MIN}% · High &gt; {GRADE_HIGH_MIN}% Ni
+      </div>
+
+      <div className="stacked-bar">
+        {GRADE_TIERS.map((t) => (
+          <div key={t.key} className="stacked-seg" style={{ width: `${tiers[t.key].pct}%`, background: t.color }}
+            title={`${t.label}: ${fmt(tiers[t.key].stock)} WMT (${fmt(tiers[t.key].pct, 1)}%)`} />
+        ))}
+      </div>
+
+      <div className="grade-tier-grid">
+        {GRADE_TIERS.map((t) => {
+          const x = tiers[t.key];
+          return (
+            <div key={t.key} className="grade-tier-card" style={{ borderTopColor: t.color }}>
+              <div className="grade-tier-name"><span className="dot" style={{ background: t.color }} />{t.label}</div>
+              <div className="grade-tier-range">{t.range}</div>
+              <div className="grade-tier-value">{fmt(x.stock)} <small>WMT</small></div>
+              <div className="grade-tier-row"><span>Share of stock</span><strong>{fmt(x.pct, 1)}%</strong></div>
+              <div className="grade-tier-row"><span>Domes</span><strong>{x.domes}</strong></div>
+              {t.key !== "unassayed" && <div className="grade-tier-row"><span>Avg Ni</span><strong>{x.avgNi > 0 ? `${fmt(x.avgNi, 2)}%` : "—"}</strong></div>}
+              {t.key !== "unassayed" && <div className="grade-tier-row"><span>≈ Barges left</span><strong>{fmt(x.bargeEq, 1)}</strong></div>}
+            </div>
+          );
+        })}
+      </div>
+
+      {detailed && (
+        <>
+          <div className="grade-sub-head">Barged vs. remaining, and what's already planned</div>
+          <div className="table-wrap">
+            <table className="data-table data-table-compact">
+              <thead>
+                <tr><th>Tier</th><th>Remaining (WMT)</th><th>Planned in open barges</th><th>Free (unplanned)</th><th>Already barged</th><th>Share of barged</th><th>Share of remaining</th></tr>
+              </thead>
+              <tbody>
+                {GRADE_TIERS.filter((t) => t.key !== "unassayed").map((t) => {
+                  const x = tiers[t.key];
+                  return (
+                    <tr key={t.key}>
+                      <td><span className="dot" style={{ background: t.color }} />{t.label}</td>
+                      <td>{fmt(x.stock)}</td>
+                      <td>{x.planned > 0 ? fmt(x.planned) : "—"}</td>
+                      <td>{fmt(x.free)}</td>
+                      <td>{x.barged > 0 ? fmt(x.barged) : "—"}</td>
+                      <td>{totalBarged > 0 ? `${fmt(x.bargedPct, 1)}%` : "—"}</td>
+                      <td>{fmt(x.pct, 1)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="note" style={{ margin: "8px 0 14px" }}>
+            {totalBarged > 0
+              ? `High grade is ${fmt(highShare, 1)}% of assayed remaining stock versus ${fmt(tiers.high.bargedPct, 1)}% of what has been barged so far. If remaining is higher than barged, the lower-Ni domes are being used first and the leftover stock is trending richer.`
+              : "No finalized barges yet, so there's no barged-tonnage comparison."}
+            {" "}Planned = tonnage allocated to barges that aren't finalized yet; Free = remaining minus planned.
+          </div>
+
+          <div className="grade-sub-head">Grade tier by contractor (WMT remaining)</div>
+          <div className="table-wrap">
+            <table className="data-table data-table-compact">
+              <thead>
+                <tr><th>Contractor</th><th>Low</th><th>Medium</th><th>High</th><th>Unassayed</th><th>Total</th><th>Mix</th></tr>
+              </thead>
+              <tbody>
+                {contractorRows.map(([name, c]) => (
+                  <tr key={name}>
+                    <td><span className="dot" style={{ background: colorFor(name) }} />{name}</td>
+                    <td>{c.low > 0 ? fmt(c.low) : "—"}</td>
+                    <td>{c.medium > 0 ? fmt(c.medium) : "—"}</td>
+                    <td>{c.high > 0 ? fmt(c.high) : "—"}</td>
+                    <td>{c.unassayed > 0 ? fmt(c.unassayed) : "—"}</td>
+                    <td>{fmt(c.total)}</td>
+                    <td style={{ minWidth: 140 }}>
+                      <div className="stacked-bar stacked-bar-mini">
+                        {GRADE_TIERS.map((t) => (
+                          <div key={t.key} className="stacked-seg" style={{ width: `${c.total > 0 ? (c[t.key] / c.total) * 100 : 0}%`, background: t.color }} />
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function OverviewTab({ domes, barges, settings }) {
   const domesById = useMemo(() => Object.fromEntries(domes.map((d) => [d.id, d])), [domes]);
   const totalExisting = domes.reduce((s, d) => s + d.stock, 0);
@@ -2014,6 +2183,8 @@ function OverviewTab({ domes, barges, settings }) {
 
       <SiteMap domes={domes} />
 
+      <GradeTierCard domes={domes} barges={barges} settings={settings} />
+
       <section className="glass panel">
         <div className="panel-head"><Gauge size={16} /><span>Total production vs. 2026 quota</span></div>
         <div className="stacked-bar">
@@ -2052,7 +2223,7 @@ function OverviewTab({ domes, barges, settings }) {
 
 /* ----------------------------- Stock tab ----------------------------- */
 
-function StockTab({ domes, barges = [] }) {
+function StockTab({ domes, barges = [], settings }) {
   const [search, setSearch] = useState("");
   const [bargeFilter, setBargeFilter] = useState("all"); // "all" or a barge number
   const [showExhausted, setShowExhausted] = useState(false);
@@ -2229,6 +2400,7 @@ function StockTab({ domes, barges = [] }) {
 
   return (
     <div className="stack">
+      <GradeTierCard domes={domes} barges={barges} settings={settings} detailed />
       {inventorySummary.length > 0 && (
         <section className="glass panel">
           <div 
@@ -5724,7 +5896,7 @@ function IntegraDashboardInner() {
 
       <main className="content">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
-        {tab === "stock" && userFeatures.stock && <StockTab domes={domes} barges={barges} />}
+        {tab === "stock" && userFeatures.stock && <StockTab domes={domes} barges={barges} settings={settings} />}
         {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
         {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} isFeatureEnabled={isFeatureEnabled} dismissedLoadingBarges={dismissedLoadingBarges} dismissLoadingBarge={dismissLoadingBarge} />}
         {tab === "financials" && isAdmin && userFeatures.financials && (
@@ -6200,6 +6372,16 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .data-table th.sortable:hover { color: #E35F0C; }
 .data-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.05); color: #D6DDE6; white-space: nowrap; }
 .cell-stockout { color: #E35F0C !important; font-weight: 600; }
+.grade-tier-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 14px 0; }
+.grade-tier-card { padding: 12px 14px; border-radius: 12px; background: rgba(255,255,255,.04); border-top: 3px solid; }
+.grade-tier-name { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.grade-tier-range { font-size: 11px; opacity: .6; margin: 2px 0 8px; }
+.grade-tier-value { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+.grade-tier-value small { font-size: 12px; font-weight: 500; opacity: .6; }
+.grade-tier-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+.grade-tier-row span { opacity: .65; }
+.grade-sub-head { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; opacity: .7; margin: 14px 0 6px; }
+.stacked-bar-mini { height: 8px; margin: 0; }
 .barge-chip-list { display: flex; flex-wrap: wrap; gap: 4px; min-width: 120px; }
 .barge-chip { display: inline-block; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .barge-chip-final { background: rgba(227,95,12,.18); color: #E35F0C; }
