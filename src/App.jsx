@@ -2095,9 +2095,16 @@ function computeGradeTiers(domes, barges, bargeSize) {
     tiers[k].stock += d.stock;
     tiers[k].domes += 1;
     tiers[k].niSum += d.stock * d.ni;
-    const c = (byContractor[d.contractor] = byContractor[d.contractor] || { low: 0, medium: 0, high: 0, unassayed: 0, total: 0, source: d.source });
+    // Split by source (production / inventory) so the contractor table can be filtered, and keep
+    // dome count and Ni-weighted sum per tier for the hover details.
+    const entry = (byContractor[d.contractor] = byContractor[d.contractor] || {});
+    const src = d.source === "inventory" ? "inventory" : "production";
+    const c = (entry[src] = entry[src] || { low: 0, medium: 0, high: 0, unassayed: 0, total: 0,
+      n: { low: 0, medium: 0, high: 0, unassayed: 0 }, niSum: { low: 0, medium: 0, high: 0, unassayed: 0 } });
     c[k] += d.stock;
     c.total += d.stock;
+    c.n[k] += 1;
+    c.niSum[k] += d.stock * d.ni;
   });
 
   (barges || []).forEach((b) => {
@@ -2125,10 +2132,33 @@ function GradeTierCard({ domes, barges, settings, detailed = false }) {
   const { tiers, total, totalBarged, byContractor } = useMemo(
     () => computeGradeTiers(domes, barges, settings.bargeSize), [domes, barges, settings.bargeSize]
   );
-  const contractorRows = useMemo(
-    () => Object.entries(byContractor).sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true })),
-    [byContractor]
-  );
+  // Source filter for the by-contractor table: all / production / inventory.
+  const [srcFilter, setSrcFilter] = useState("all");
+  const [tip, setTip] = useState(null);
+  const contractorRows = useMemo(() => {
+    const keys = srcFilter === "all" ? ["production", "inventory"] : [srcFilter];
+    const rows = [];
+    Object.entries(byContractor).forEach(([name, entry]) => {
+      const m = { low: 0, medium: 0, high: 0, unassayed: 0, total: 0,
+        n: { low: 0, medium: 0, high: 0, unassayed: 0 }, niSum: { low: 0, medium: 0, high: 0, unassayed: 0 }, sources: [] };
+      keys.forEach((sk) => {
+        const e = entry[sk];
+        if (!e) return;
+        m.sources.push(sk);
+        GRADE_TIERS.forEach((t) => { m[t.key] += e[t.key]; m.n[t.key] += e.n[t.key]; m.niSum[t.key] += e.niSum[t.key]; });
+        m.total += e.total;
+      });
+      if (m.total > 0) rows.push([name, m]);
+    });
+    return rows.sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }));
+  }, [byContractor, srcFilter]);
+  const filterTotals = useMemo(() => contractorRows.reduce((s, [, c]) => s + c.total, 0), [contractorRows]);
+  const showTip = (e, name, c, t) => {
+    const wmt = c[t.key];
+    setTip({ x: e.clientX, y: e.clientY, name, label: t.label, color: t.color, wmt,
+      pct: c.total > 0 ? (wmt / c.total) * 100 : 0, domes: c.n[t.key], ni: wmt > 0 && c.niSum[t.key] > 0 ? c.niSum[t.key] / wmt : 0,
+      total: c.total, key: t.key });
+  };
   // Stock tab (detailed) version: whole card can be minimized, and the by-contractor
   // table sits behind its own button. Starts open, contractor detail starts hidden.
   const [open, setOpen] = useState(true);
@@ -2218,24 +2248,42 @@ function GradeTierCard({ domes, barges, settings, detailed = false }) {
           </button>
           {showContractors && (<>
           <div className="grade-sub-head">Grade tier by contractor (WMT remaining)</div>
+          <div className="grade-filter-row">
+            <div className="seg-toggle" role="group" aria-label="Filter by source">
+              {[["all", "All"], ["production", "Production"], ["inventory", "Inventory"]].map(([k, l]) => (
+                <button key={k} type="button" className={`seg-btn ${srcFilter === k ? "active" : ""}`}
+                  aria-pressed={srcFilter === k} onClick={() => setSrcFilter(k)}>{l}</button>
+              ))}
+            </div>
+            <span className="grade-filter-meta">{contractorRows.length} contractors · {fmt(filterTotals)} WMT</span>
+          </div>
           <div className="table-wrap">
             <table className="data-table data-table-compact">
               <thead>
-                <tr><th>Contractor</th><th>Low</th><th>Medium</th><th>High</th><th>Unassayed</th><th>Total</th><th>Mix</th></tr>
+                <tr><th>Contractor</th><th>Low</th><th>Medium</th><th>High</th><th>Unassayed</th><th>Total</th><th>Mix <small className="grade-hover-hint">hover a bar</small></th></tr>
               </thead>
               <tbody>
+                {contractorRows.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", opacity: .6 }}>No stock for this filter.</td></tr>}
                 {contractorRows.map(([name, c]) => (
                   <tr key={name}>
-                    <td><span className="dot" style={{ background: colorFor(name) }} />{name}</td>
+                    <td><span className="dot" style={{ background: colorFor(name) }} />{name}
+                      {srcFilter === "all" && <span className="grade-src-tag">{c.sources.map((x) => x === "production" ? "PROD" : "INV").join(" + ")}</span>}
+                    </td>
                     <td>{c.low > 0 ? fmt(c.low) : "—"}</td>
                     <td>{c.medium > 0 ? fmt(c.medium) : "—"}</td>
                     <td>{c.high > 0 ? fmt(c.high) : "—"}</td>
                     <td>{c.unassayed > 0 ? fmt(c.unassayed) : "—"}</td>
                     <td>{fmt(c.total)}</td>
                     <td style={{ minWidth: 140 }}>
-                      <div className="stacked-bar stacked-bar-mini">
-                        {GRADE_TIERS.map((t) => (
-                          <div key={t.key} className="stacked-seg" style={{ width: `${c.total > 0 ? (c[t.key] / c.total) * 100 : 0}%`, background: t.color }} />
+                      <div className="stacked-bar stacked-bar-mini" onMouseLeave={() => setTip(null)}>
+                        {GRADE_TIERS.map((t) => c[t.key] > 0 && (
+                          <div key={t.key} className="stacked-seg stacked-seg-hover" tabIndex={0}
+                            style={{ width: `${(c[t.key] / c.total) * 100}%`, background: t.color }}
+                            aria-label={`${name} ${t.label}: ${fmt(c[t.key])} WMT`}
+                            onMouseEnter={(e) => showTip(e, name, c, t)} onMouseMove={(e) => showTip(e, name, c, t)}
+                            onClick={(e) => showTip(e, name, c, t)}
+                            onFocus={(e) => { const r = e.currentTarget.getBoundingClientRect(); showTip({ clientX: r.left + r.width / 2, clientY: r.top }, name, c, t); }}
+                            onBlur={() => setTip(null)} />
                         ))}
                       </div>
                     </td>
@@ -2244,6 +2292,16 @@ function GradeTierCard({ domes, barges, settings, detailed = false }) {
               </tbody>
             </table>
           </div>
+          {tip && (
+            <div className="grade-tip" style={{ left: Math.min(tip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 230), top: tip.y + 16 }}>
+              <div className="grade-tip-head"><span className="dot" style={{ background: tip.color }} />{tip.name} · {tip.label}</div>
+              <div className="grade-tip-val">{fmt(tip.wmt)} <small>WMT</small></div>
+              <div className="grade-tip-row"><span>Share of contractor</span><strong>{fmt(tip.pct, 1)}%</strong></div>
+              <div className="grade-tip-row"><span>Domes</span><strong>{tip.domes}</strong></div>
+              {tip.key !== "unassayed" && <div className="grade-tip-row"><span>Avg Ni</span><strong>{tip.ni > 0 ? `${fmt(tip.ni, 2)}%` : "—"}</strong></div>}
+              <div className="grade-tip-row"><span>Contractor total</span><strong>{fmt(tip.total)} WMT</strong></div>
+            </div>
+          )}
           </>)}
         </>
       )}
@@ -6790,6 +6848,25 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .target-row .target-value { margin-left: auto; text-align: right; white-space: nowrap; }
 .table-wrap-tall .data-table td:first-child, .table-wrap-tall .data-table th:first-child { position: sticky; left: 0; z-index: 1; background: #141B26; }
 .table-wrap-tall .data-table thead th:first-child { z-index: 3; }
+.grade-filter-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+.seg-toggle { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); }
+.seg-btn { background: transparent; border: 0; color: #9AA6B6; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 8px; cursor: pointer; transition: background 160ms ease, color 160ms ease; font-family: inherit; }
+.seg-btn:hover { color: #EAF0F6; }
+.seg-btn.active { background: rgba(227,95,12,.22); color: #FFB27A; }
+.grade-filter-meta { font-size: 11.5px; color: #8A97A8; font-family: 'JetBrains Mono', monospace; }
+.grade-src-tag { margin-left: 8px; font-size: 9.5px; letter-spacing: .05em; color: #8A97A8; border: 1px solid rgba(255,255,255,.12); border-radius: 5px; padding: 1px 5px; vertical-align: middle; }
+.grade-hover-hint { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: .55; margin-left: 4px; }
+.stacked-bar .stacked-seg.stacked-seg-hover { cursor: pointer; outline: none; transition: width .5s ease, filter 140ms ease; }
+.stacked-bar .stacked-seg.stacked-seg-hover:hover, .stacked-bar .stacked-seg.stacked-seg-hover:focus-visible { filter: brightness(1.35) saturate(1.1); }
+.stacked-bar-mini { height: 10px; }
+.grade-tip { position: fixed; z-index: 9999; width: 216px; pointer-events: none; padding: 10px 12px; border-radius: 12px;
+  background: #121A26; border: 1px solid rgba(255,255,255,.16); box-shadow: 0 12px 32px rgba(0,0,0,.55); animation: gradeTipIn 120ms ease; }
+@keyframes gradeTipIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.grade-tip-head { font-size: 11.5px; font-weight: 600; color: #EAF0F6; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.grade-tip-val { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 6px; }
+.grade-tip-val small { font-size: 11px; color: #8A97A8; font-weight: 500; }
+.grade-tip-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: #8A97A8; padding: 2px 0; }
+.grade-tip-row strong { color: #EAF0F6; font-weight: 600; }
 .target-label { white-space: nowrap; font-size: 11px; color: #8A97A8; text-transform: uppercase; letter-spacing: .02em; font-weight: 600; }
 .target-value { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 600; color: #B7C0CC; }
 .target-ni-target { font-size: 10.5px; color: #667080; font-weight: 400; }
