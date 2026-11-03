@@ -4,6 +4,7 @@ import {
   Layers, ChevronDown, Gauge, Upload, X,
   Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw, MessageSquare, Eye, EyeOff, ChevronsLeft, ChevronsRight
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import html2canvas from "html2canvas";
@@ -2292,15 +2293,16 @@ function GradeTierCard({ domes, barges, settings, detailed = false }) {
               </tbody>
             </table>
           </div>
-          {tip && (
-            <div className="grade-tip" style={{ left: Math.min(tip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 230), top: tip.y + 16 }}>
+          {tip && typeof document !== "undefined" && createPortal(
+            <div className="grade-tip" style={{ left: Math.min(tip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 230), top: Math.min(tip.y + 16, (typeof window !== "undefined" ? window.innerHeight : 800) - 190) }}>
               <div className="grade-tip-head"><span className="dot" style={{ background: tip.color }} />{tip.name} · {tip.label}</div>
               <div className="grade-tip-val">{fmt(tip.wmt)} <small>WMT</small></div>
               <div className="grade-tip-row"><span>Share of contractor</span><strong>{fmt(tip.pct, 1)}%</strong></div>
               <div className="grade-tip-row"><span>Domes</span><strong>{tip.domes}</strong></div>
               {tip.key !== "unassayed" && <div className="grade-tip-row"><span>Avg Ni</span><strong>{tip.ni > 0 ? `${fmt(tip.ni, 2)}%` : "—"}</strong></div>}
               <div className="grade-tip-row"><span>Contractor total</span><strong>{fmt(tip.total)} WMT</strong></div>
-            </div>
+            </div>,
+            document.body
           )}
           </>)}
         </>
