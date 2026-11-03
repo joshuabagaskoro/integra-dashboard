@@ -1765,7 +1765,7 @@ function AppSidebar({ tab, setTab, isAdmin, currentUser, handleLogout, userFeatu
           <IntegraLogo className="sb-logo" width={30} height={35} />
           <div className="sb-brand-text">
             <div className="sb-brand-name">INTEGRA</div>
-            <div className="sb-brand-sub">Barging Plan · 2026</div>
+            <div className="sb-brand-sub">Operation Dashboard · 2026</div>
           </div>
         </div>
         <button type="button" className="sb-toggle" onClick={toggle} aria-expanded={!collapsed}
@@ -1979,11 +1979,14 @@ function SiteMap({ domes }) {
 
   useEffect(() => {
     if (!isDragging) return;
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
+    // Pointer events (not mouse events) so a finger can pan the map too.
+    window.addEventListener("pointermove", handleMouseMove);
+    window.addEventListener("pointerup", handleMouseUp);
+    window.addEventListener("pointercancel", handleMouseUp);
     return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("pointermove", handleMouseMove);
+      window.removeEventListener("pointerup", handleMouseUp);
+      window.removeEventListener("pointercancel", handleMouseUp);
     };
   }, [isDragging, dragStart, viewBoxWidth, viewBoxHeight]);
 
@@ -1991,7 +1994,7 @@ function SiteMap({ domes }) {
     <section className="glass panel">
       <div className="panel-head"><MapPin size={16} /><span>Site map — stock by stockpile location</span></div>
       <div className="site-map-wrap">
-        <svg ref={mapSvgRef} viewBox={`${viewBoxX} ${viewBoxY} ${viewBoxWidth} ${viewBoxHeight}`} className={`site-map-svg ${isDragging ? "dragging" : ""}`} preserveAspectRatio="xMidYMid meet" onMouseDown={handleMouseDown} style={{ cursor: isDragging ? "grabbing" : "grab" }}>
+        <svg ref={mapSvgRef} viewBox={`${viewBoxX} ${viewBoxY} ${viewBoxWidth} ${viewBoxHeight}`} className={`site-map-svg ${isDragging ? "dragging" : ""}`} preserveAspectRatio="xMidYMid meet" onPointerDown={(e) => { setHover(null); handleMouseDown(e); }} style={{ cursor: isDragging ? "grabbing" : "grab", touchAction: zoom > 1 ? "none" : "pan-y" }}>
           <defs>
             <pattern id="mapGrid" width="20" height="20" patternUnits="userSpaceOnUse">
               <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.035)" strokeWidth="1" />
@@ -3122,7 +3125,7 @@ function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled, dismiss
         <div className="panel-head"><TrendingUp size={16} /><span>Shipping schedule by month</span></div>
         <div className="month-chart">
           {monthCounts.map((m, i) => (
-            <div className="month-col" key={i} onMouseEnter={() => setHoveredMonth(i)} onMouseLeave={() => setHoveredMonth(null)}>
+            <div className="month-col" key={i} onMouseEnter={() => setHoveredMonth(i)} onMouseLeave={() => setHoveredMonth(null)} onTouchStart={() => setHoveredMonth(i)}>
               {hoveredMonth === i && (
                 <div className="chart-tooltip">
                   <div className="chart-tooltip-title">{MONTHS[i]}</div>
@@ -6010,7 +6013,7 @@ function IntegraDashboardInner() {
           <IntegraLogo className="brand-logo" width={40} height={46} />
           <div>
             <div className="brand-name">INTEGRA</div>
-            <div className="brand-sub">Nickel Ore Barging Plan · 2026</div>
+            <div className="brand-sub">Operation Dashboard · 2026</div>
             <div className="data-updated-badge" title={lastSyncError?.startsWith("Meta") ? lastSyncError : "Last time stock/barge Excel data was updated"}>
               <Calendar size={11} /> Data updated {fmtShortDate(dataLastUpdated)}
               {lastSyncError?.startsWith("Meta") && <span className="data-updated-warn"> ⚠ sync issue — see Settings</span>}
@@ -7425,7 +7428,7 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .sb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 14px; min-height: 52px; }
 .sb-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .sb-logo { flex-shrink: 0; filter: drop-shadow(0 2px 6px rgba(255,107,53,.18)); }
-.sb-brand-text { min-width: 0; overflow: hidden; transition: opacity .2s var(--ease), max-width .3s var(--ease); max-width: 150px; }
+.sb-brand-text { min-width: 0; overflow: hidden; transition: opacity .2s var(--ease), max-width .3s var(--ease); max-width: 175px; }
 .sb-brand-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: .05em; white-space: nowrap; }
 .sb-brand-sub { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-top: 1px; }
 .sb-toggle { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px;
@@ -7495,6 +7498,113 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
   .app-layout { display: block; }
 }
 @media print { .sidebar { display: none !important; } .app-layout { display: block !important; } }
+
+
+/* ============================ MOBILE / TOUCH ============================ */
+html { -webkit-tap-highlight-color: transparent; }
+.app button, .app a, .app select, .app label, .app [role="button"], .app th.sortable { touch-action: manipulation; }
+.app { min-height: 100vh; min-height: 100dvh; overscroll-behavior-y: none; }
+.sidebar { height: 100vh; height: 100dvh; }
+/* The glass look relies on backdrop-filter, which doesn't stack inside another backdrop-filtered
+ * element (the sticky top bar) — the menu rendered see-through on phones. Give it a solid surface. */
+.mobile-nav-panel { background: #121923; border: 1px solid rgba(255,255,255,.12); box-shadow: 0 18px 44px rgba(0,0,0,.6); backdrop-filter: none; -webkit-backdrop-filter: none; }
+.mobile-nav-item { min-height: 44px; }
+.topbar { padding-top: max(14px, env(safe-area-inset-top)); }
+
+/* Hover lifts stick after a tap on touch screens — only apply them where a real hover exists. */
+@media (hover: none) {
+  .kpi:hover, .stat-card:hover, .contractor-card:hover, .target-card:hover, .financial-card:hover, .grade-tier-card:hover { transform: none; box-shadow: none; }
+  .btn-import:hover, .btn-ghost:hover, .btn-primary:hover, .chip:hover:not(.chip-active) { box-shadow: none; }
+  .data-table tr:hover td { background: transparent; }
+}
+
+@media (max-width: 640px) {
+  /* iOS Safari zooms the whole page when a focused field is under 16px — keep every input at 16px */
+  .app input:not([type="checkbox"]):not([type="radio"]), .app select, .app textarea,
+  .modal-input, .login-input, .search-box input, .dome-select-search input { font-size: 16px; }
+  .app input[type="checkbox"], .app input[type="radio"] { width: 20px; height: 20px; }
+
+  /* TEST ACCOUNT badge sat on top of the hamburger button — park it bottom-left instead */
+  .test-badge { top: auto; bottom: calc(14px + env(safe-area-inset-bottom)); left: 12px; right: auto; padding: 4px 10px; font-size: 9.5px; opacity: .9; }
+  .loading-assistant-btn { bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .content { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+
+  /* compact top bar */
+  .topbar { padding: max(10px, env(safe-area-inset-top)) 14px 10px; gap: 8px; flex-wrap: nowrap; margin-bottom: 8px; }
+  .brand { min-width: 0; gap: 10px; }
+  .brand-logo { width: 34px; height: 39px; }
+  .brand-name { font-size: 15px; }
+  .brand-sub { display: none; }
+  .data-updated-badge { margin-top: 1px; font-size: 10px; }
+  .nav-desktop-wrapper { flex-shrink: 0; }
+  .hamburger-btn { width: 44px; height: 44px; border-radius: 12px; }
+  .mobile-nav-panel { position: fixed; top: calc(max(10px, env(safe-area-inset-top)) + 54px); right: 12px; left: 12px; width: auto; max-width: none; max-height: calc(100dvh - 90px); overflow-y: auto; }
+
+  /* cards and banners */
+  .banner { padding: 14px; gap: 10px; }
+  .banner-title { font-size: 14px; }
+  .banner-body { font-size: 12.5px; }
+  .hero-title { font-size: 19px; }
+  .hero-desc { margin-bottom: 12px; }
+  .kpi { padding: 10px 12px; }
+  .kpi-label { font-size: 10.5px; }
+  .kpi-unit { margin-left: 3px; }
+  .panel-head { font-size: 14px; }
+  .panel-head-collapsible { padding: 12px; }
+  .site-map-wrap { height: 340px; }
+  .zoom-btn { width: 40px; height: 40px; }
+  .map-tip-overlay { max-width: 70vw; white-space: normal; }
+
+  /* barge rows: tidy two-line summary instead of one long wrapping line */
+  .barge-row-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 12px 14px; }
+  .barge-row-left { order: 1; flex: 1 1 auto; min-width: 0; }
+  .barge-row-top > .badge { order: 2; }
+  .barge-row-top > .date-input { order: 3; flex: 0 0 auto; font-size: 13px; }
+  .barge-total-wmt { order: 4; margin-left: auto; }
+  .barge-avg-ni { order: 5; }
+  .barge-avg-simg { order: 6; }
+  .btn-export-mini, .btn-invoice-mini { order: 7; flex: 1 1 calc(50% - 6px); justify-content: center; margin-left: 0; padding: 9px 10px; font-size: 12px; }
+  .barge-info-row { flex-direction: column; }
+  .info-field, .info-input { width: 100%; min-width: 0; }
+  .add-dome-row { flex-direction: column; }
+  .add-dome-row select, .add-dome-row input, .dome-select { width: 100%; min-width: 0; }
+  .cell-input { width: 84px; padding: 8px; }
+  .icon-btn { padding: 8px; }
+  .barge-row-actions { flex-wrap: wrap; }
+  .barge-row-actions > * { flex: 1 1 140px; justify-content: center; }
+  .btn-export-pdf { margin-left: 0; width: 100%; justify-content: center; }
+  .import-barge-label { width: 100%; justify-content: center; padding: 12px; font-size: 12.5px; }
+
+  /* tables: comfortable tap rows, visible scroll affordance */
+  .table-wrap, .table-wrap-tall { -webkit-overflow-scrolling: touch; margin: 0 -4px; }
+  .table-wrap-tall { max-height: 60vh; }
+  .data-table td { padding: 10px 10px; }
+  .filtered-summary { padding: 12px; }
+  .month-chart { height: 130px; gap: 3px; }
+  .month-name { font-size: 9.5px; }
+  .chart-tooltip { min-width: 132px; }
+
+  /* modals become near-full-screen sheets */
+  .import-modal, .validation-modal, .invoice-modal { padding: 10px; align-items: flex-end; }
+  .import-panel, .validation-panel { max-width: 100%; width: 100%; max-height: 88dvh; border-radius: 20px 20px 14px 14px; }
+  .invoice-panel { max-height: 94dvh; width: 100%; max-width: 100%; }
+  .invoice-preview-wrap { padding: 10px; overflow-x: auto; justify-content: flex-start; }
+  .invoice-form { padding: 16px; border-right: none; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .modal-card { max-width: 100%; }
+  .modal-actions > * { flex: 1; justify-content: center; min-height: 44px; }
+  .toast { font-size: 13px; }
+
+  /* settings / admin */
+  .settings-section { padding: 16px 14px; }
+  .royalty-table, .log-table { overflow-x: auto; }
+  .royalty-header, .royalty-row { min-width: 640px; }
+  .financial-cards-row { grid-template-columns: 1fr; }
+  .mini-stats-row { grid-template-columns: repeat(2, 1fr); }
+  .login-container { padding: 14px; align-items: flex-start; overflow-y: auto; }
+  .login-panel-form { padding: 28px 22px; }
+  .gen-form { padding: 14px; }
+  .legend { flex-direction: column; gap: 6px; }
+}
 
 `;
 
