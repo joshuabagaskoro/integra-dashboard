@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useContext, createContext,
 import {
   Package, Ship, Calendar, TrendingUp, AlertTriangle, CheckCircle2,
   Layers, ChevronDown, Gauge, Upload, X,
-  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw, MessageSquare, Eye, EyeOff
+  Search, Plus, Trash2, Lock, Unlock, LayoutGrid, FileUp, MapPin, FileText, Printer, FileDown, DollarSign, History, LogOut, Settings, Menu, RefreshCw, MessageSquare, Eye, EyeOff, ChevronsLeft, ChevronsRight
 } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -1697,11 +1697,125 @@ function NavButton({ icon: Icon, label, active, onClick, mobile }) {
   );
 }
 
+/* Integra logo mark — shared by the mobile top bar and the desktop sidebar. */
+function IntegraLogo({ className = "brand-logo", width = 40, height = 46 }) {
+  return (
+    <svg width={width} height={height} viewBox="0 0 700 820" className={className} aria-hidden="true">
+      <rect x="62" y="57" width="185" height="62" fill="#E35F0C" />
+      <rect x="62" y="167" width="185" height="63" fill="#E35F0C" />
+      <rect x="62" y="278" width="587" height="62" fill="#BFB12A" />
+      <rect x="62" y="278" width="66" height="299" fill="#BFB12A" />
+      <rect x="174" y="387" width="475" height="62" fill="#BFB12A" />
+      <rect x="174" y="387" width="73" height="190" fill="#BFB12A" />
+      <rect x="389" y="501" width="59" height="185" fill="#E35F0C" />
+      <rect x="62" y="624" width="386" height="62" fill="#E35F0C" />
+      <rect x="495" y="501" width="65" height="294" fill="#E35F0C" />
+      <rect x="62" y="734" width="498" height="61" fill="#E35F0C" />
+    </svg>
+  );
+}
+
+/* Desktop sidebar navigation (replaces the old top-bar tabs on screens > 900px).
+ * Sections group the tabs like the reference design; the whole rail collapses to an icon-only
+ * strip, remembered per browser. Collapsed items show their name as a tooltip on hover/focus.
+ * Ctrl/Cmd + B toggles it. Under 900px the top bar + hamburger menu is used instead. */
+function AppSidebar({ tab, setTab, isAdmin, currentUser, handleLogout, userFeatures, canImport, onImport, dataUpdatedLabel, syncWarn }) {
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem("integra.sidebar.collapsed") === "1"; } catch (e) { return false; }
+  });
+  const toggle = useCallback(() => {
+    setCollapsed((c) => {
+      const next = !c;
+      try { localStorage.setItem("integra.sidebar.collapsed", next ? "1" : "0"); } catch (e) { /* storage unavailable — fine */ }
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    const onKey = (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b" && !e.shiftKey && !e.altKey) { e.preventDefault(); toggle(); } };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggle]);
+
+  const workspace = [
+    { key: "overview", label: "Overview", icon: LayoutGrid },
+    ...(userFeatures.stock ? [{ key: "stock", label: "Stock", icon: Layers }] : []),
+    ...(userFeatures.barging ? [{ key: "plan", label: "Barging Plan", icon: Ship }] : []),
+    ...(userFeatures.timeline ? [{ key: "timeline", label: "Timeline", icon: Calendar }] : []),
+  ];
+  const management = [
+    ...(isAdmin && userFeatures.financials ? [{ key: "financials", label: "Financials", icon: DollarSign }] : []),
+    ...(isAdmin && userFeatures.loginLog ? [{ key: "log", label: "Login Log", icon: History }] : []),
+    ...(userFeatures.settings || currentUser?.username === "dev" ? [{ key: "settings", label: "Settings", icon: Settings }] : []),
+  ];
+  const initial = (currentUser?.username || "?").charAt(0).toUpperCase();
+
+  const renderItem = (item) => (
+    <button key={item.key} type="button" className={`sb-item ${tab === item.key ? "sb-item-active" : ""}`}
+      onClick={() => setTab(item.key)} aria-current={tab === item.key ? "page" : undefined}
+      data-label={item.label} aria-label={item.label}>
+      <item.icon size={18} strokeWidth={2.1} className="sb-icon" />
+      <span className="sb-label">{item.label}</span>
+    </button>
+  );
+
+  return (
+    <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""}`} aria-label="Main navigation">
+      <div className="sb-head">
+        <div className="sb-brand">
+          <IntegraLogo className="sb-logo" width={30} height={35} />
+          <div className="sb-brand-text">
+            <div className="sb-brand-name">INTEGRA</div>
+            <div className="sb-brand-sub">Barging Plan · 2026</div>
+          </div>
+        </div>
+        <button type="button" className="sb-toggle" onClick={toggle} aria-expanded={!collapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={`${collapsed ? "Expand" : "Collapse"} sidebar (Ctrl/Cmd+B)`}>
+          {collapsed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+        </button>
+      </div>
+
+      <nav className="sb-nav">
+        <div className="sb-section-title">Workspace</div>
+        {workspace.map(renderItem)}
+        {management.length > 0 && (
+          <>
+            <div className="sb-section-title sb-section-gap">Management</div>
+            {management.map(renderItem)}
+          </>
+        )}
+      </nav>
+
+      <div className="sb-foot">
+        {canImport && (
+          <button type="button" className="sb-item sb-action" onClick={onImport} data-label="Import data" aria-label="Import data">
+            <Upload size={18} strokeWidth={2.1} className="sb-icon" />
+            <span className="sb-label">Import data</span>
+          </button>
+        )}
+        <div className="sb-updated" title="Last time stock/barge Excel data was updated">
+          <Calendar size={12} /> <span>Data updated {dataUpdatedLabel}</span>
+          {syncWarn && <span className="data-updated-warn"> ⚠ sync issue</span>}
+        </div>
+        <div className="sb-user">
+          <div className="sb-avatar" aria-hidden="true">{initial}</div>
+          <div className="sb-user-text">
+            <div className="sb-user-name">{currentUser?.username}</div>
+            <div className="sb-user-role">{isAdmin ? "Administrator" : "Operations"}</div>
+          </div>
+          <button type="button" className="sb-logout" onClick={handleLogout} data-label="Log out" aria-label="Log out" title="Log out">
+            <LogOut size={16} />
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
 /* Mobile hamburger nav — a single button that opens a dropdown listing every tab,
  * replacing the old bottom icon bar (which got cramped once Financials/Log/Settings
  * were added on top of the original 4 tabs). Closes on selection or on outside click,
  * same interaction pattern as MultiSelectDropdown/SearchableDomeSelect elsewhere. */
-function MobileNavMenu({ tab, setTab, isAdmin, currentUser, handleLogout, userFeatures }) {
+function MobileNavMenu({ tab, setTab, isAdmin, currentUser, handleLogout, userFeatures, canImport, onImport }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -1742,6 +1856,13 @@ function MobileNavMenu({ tab, setTab, isAdmin, currentUser, handleLogout, userFe
               </button>
             ))}
           </div>
+          {canImport && (
+            <div className="mobile-nav-list" style={{ paddingTop: 0 }}>
+              <button className="mobile-nav-item" onClick={() => { setOpen(false); onImport(); }}>
+                <Upload size={17} strokeWidth={2.3} /><span>Import data</span>
+              </button>
+            </div>
+          )}
           <button className="mobile-nav-logout" onClick={() => { setOpen(false); handleLogout(); }}>
             <LogOut size={16} /> <span>Logout</span>
           </button>
@@ -5879,23 +6000,14 @@ function IntegraDashboardInner() {
         <BargeExportModal barge={exportBarge} domesById={domesByIdTop} onClose={() => setExportBarge(null)} />
       )}
 
+      <div className="app-layout">
+      <AppSidebar tab={tab} setTab={setTab} isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout}
+        userFeatures={userFeatures} canImport={isFeatureEnabled("Stock_ImportExcel", true)} onImport={() => setShowImport(!showImport)}
+        dataUpdatedLabel={fmtShortDate(dataLastUpdated)} syncWarn={!!lastSyncError?.startsWith("Meta")} />
+      <div className="app-main">
       <header className="topbar">
         <div className="brand">
-          <svg width="40" height="46" viewBox="0 0 700 820" className="brand-logo">
-            {/* orange dots (top) */}
-            <rect x="62" y="57" width="185" height="62" fill="#E35F0C" />
-            <rect x="62" y="167" width="185" height="63" fill="#E35F0C" />
-            {/* gold zigzag */}
-            <rect x="62" y="278" width="587" height="62" fill="#BFB12A" />
-            <rect x="62" y="278" width="66" height="299" fill="#BFB12A" />
-            <rect x="174" y="387" width="475" height="62" fill="#BFB12A" />
-            <rect x="174" y="387" width="73" height="190" fill="#BFB12A" />
-            {/* orange bracket (bottom) */}
-            <rect x="389" y="501" width="59" height="185" fill="#E35F0C" />
-            <rect x="62" y="624" width="386" height="62" fill="#E35F0C" />
-            <rect x="495" y="501" width="65" height="294" fill="#E35F0C" />
-            <rect x="62" y="734" width="498" height="61" fill="#E35F0C" />
-          </svg>
+          <IntegraLogo className="brand-logo" width={40} height={46} />
           <div>
             <div className="brand-name">INTEGRA</div>
             <div className="brand-sub">Nickel Ore Barging Plan · 2026</div>
@@ -5921,7 +6033,7 @@ function IntegraDashboardInner() {
           <button className="btn-logout" onClick={handleLogout} title={`Log out (${currentUser?.username})`}>
             <LogOut size={13} /> <span className="btn-logout-label">Logout</span>
           </button>
-          <MobileNavMenu tab={tab} setTab={setTab} isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} userFeatures={userFeatures} />
+          <MobileNavMenu tab={tab} setTab={setTab} isAdmin={isAdmin} currentUser={currentUser} handleLogout={handleLogout} userFeatures={userFeatures} canImport={isFeatureEnabled("Stock_ImportExcel", true)} onImport={() => setShowImport(!showImport)} />
         </div>
       </header>
 
@@ -5950,6 +6062,8 @@ function IntegraDashboardInner() {
             isFeatureEnabled={isFeatureEnabled} domes={domes} barges={barges} settings={settings} />
         )}
       </main>
+      </div>
+      </div>
     </div>
   );
 }
@@ -7290,6 +7404,97 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
   .grade-tier-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .grade-tier-value { font-size: 19px; }
 }
+
+
+/* ============================ SIDEBAR NAVIGATION ============================ */
+:root { --sb-w: 252px; --sb-w-collapsed: 76px; }
+/* overflow-x: hidden turned .app into a scroll container, which silently disables position:sticky
+ * for everything inside it (sidebar and mobile top bar). overflow-x: clip still prevents sideways overflow
+ * without becoming a scroll container. */
+.app { overflow-x: clip; }
+.app-layout { display: flex; align-items: flex-start; min-height: 100vh; position: relative; z-index: 1; }
+.app-main { flex: 1 1 0; min-width: 0; }
+
+.sidebar { position: sticky; top: 0; height: 100vh; flex: 0 0 var(--sb-w); width: var(--sb-w); z-index: 45;
+  display: flex; flex-direction: column; padding: 16px 12px 14px;
+  background: linear-gradient(180deg, rgba(16,22,32,.92), rgba(9,13,19,.94));
+  border-right: 1px solid rgba(255,255,255,.07); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  transition: width .3s var(--ease), flex-basis .3s var(--ease), padding .3s var(--ease); }
+.sidebar-collapsed { flex-basis: var(--sb-w-collapsed); width: var(--sb-w-collapsed); }
+
+.sb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 14px; min-height: 52px; }
+.sb-brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.sb-logo { flex-shrink: 0; filter: drop-shadow(0 2px 6px rgba(255,107,53,.18)); }
+.sb-brand-text { min-width: 0; overflow: hidden; transition: opacity .2s var(--ease), max-width .3s var(--ease); max-width: 150px; }
+.sb-brand-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: .05em; white-space: nowrap; }
+.sb-brand-sub { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-top: 1px; }
+.sb-toggle { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px;
+  background: transparent; border: 1px solid transparent; color: var(--text-3); cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
+.sb-toggle:hover { background: rgba(255,255,255,.07); color: var(--text); border-color: rgba(255,255,255,.1); }
+
+.sb-nav { flex: 1 1 auto; display: flex; flex-direction: column; gap: 3px; padding: 4px 0; min-height: 0; overflow: visible; }
+.sb-section-title { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--text-4);
+  padding: 10px 12px 6px; white-space: nowrap; overflow: hidden; transition: opacity .2s var(--ease), padding .3s var(--ease), max-height .3s var(--ease); max-height: 40px; }
+.sb-section-gap { margin-top: 10px; }
+
+.sb-item { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; height: 40px; padding: 0 12px; border-radius: 11px;
+  background: transparent; border: none; color: var(--text-2); font-family: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer; text-align: left;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), transform .12s var(--ease); }
+.sb-item::before { content: ""; position: absolute; left: -12px; top: 9px; bottom: 9px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent);
+  transform: scaleY(0); transition: transform var(--t-med) var(--ease); }
+.sb-item:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.sb-item:active { transform: scale(.98); }
+.sb-item-active { background: rgba(255,255,255,.085); color: #fff; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+.sb-item-active::before { transform: scaleY(1); }
+.sb-icon { flex-shrink: 0; color: var(--text-3); transition: color var(--t-fast) var(--ease), transform var(--t-med) var(--ease); }
+.sb-item:hover .sb-icon { color: var(--text); }
+.sb-item-active .sb-icon { color: var(--accent); }
+.sb-label { white-space: nowrap; overflow: hidden; max-width: 170px; transition: opacity .2s var(--ease), max-width .3s var(--ease); }
+
+.sb-foot { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.07); }
+.sb-action { color: var(--accent); background: rgba(227,95,12,.1); border: 1px solid rgba(227,95,12,.25); }
+.sb-action .sb-icon { color: var(--accent); }
+.sb-action:hover { background: rgba(227,95,12,.18); color: #ff8a47; }
+.sb-updated { display: flex; align-items: center; gap: 6px; padding: 0 12px; font-size: 10.5px; color: var(--text-4); font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap; overflow: hidden; max-height: 24px; transition: opacity .2s var(--ease), max-height .3s var(--ease); }
+.sb-updated svg { color: var(--accent); flex-shrink: 0; opacity: .8; }
+.sb-user { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 12px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06); min-width: 0; }
+.sb-avatar { flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 14px; color: #fff; background: linear-gradient(145deg, #E35F0C, #B8480A); }
+.sb-user-text { flex: 1; min-width: 0; overflow: hidden; transition: opacity .2s var(--ease), max-width .3s var(--ease); max-width: 120px; }
+.sb-user-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-user-role { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+.sb-logout { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px; background: transparent;
+  border: none; color: var(--text-3); cursor: pointer; transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.sb-logout:hover { background: rgba(248,113,113,.14); color: #F87171; }
+
+/* ---- collapsed rail: icons only, labels fade out, name shown as a tooltip ---- */
+.sidebar-collapsed { padding-left: 10px; padding-right: 10px; }
+.sidebar-collapsed .sb-head { flex-direction: column; justify-content: flex-start; gap: 10px; padding-bottom: 10px; }
+.sidebar-collapsed .sb-brand-text, .sidebar-collapsed .sb-label, .sidebar-collapsed .sb-user-text { opacity: 0; max-width: 0; }
+.sidebar-collapsed .sb-section-title { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; }
+.sidebar-collapsed .sb-section-gap { margin-top: 6px; border-top: 1px solid rgba(255,255,255,.07); }
+.sidebar-collapsed .sb-updated { opacity: 0; max-height: 0; }
+.sidebar-collapsed .sb-item { justify-content: center; padding: 0; gap: 0; }
+.sidebar-collapsed .sb-item::before { left: -10px; }
+.sidebar-collapsed .sb-user { flex-direction: column; padding: 8px 4px; gap: 6px; }
+.sidebar-collapsed .sb-user-text { flex: 0 0 0; height: 0; }
+.sidebar-collapsed [data-label]:hover::after, .sidebar-collapsed [data-label]:focus-visible::after {
+  content: attr(data-label); position: absolute; left: calc(100% + 14px); top: 50%; transform: translateY(-50%);
+  background: #1B2331; color: var(--text); font-size: 12px; font-weight: 600; padding: 6px 10px; border-radius: 8px; white-space: nowrap;
+  border: 1px solid rgba(255,255,255,.14); box-shadow: 0 8px 22px rgba(0,0,0,.45); pointer-events: none; z-index: 60; animation: pop-in .14s var(--ease); }
+.sidebar-collapsed .sb-logout { position: relative; }
+
+/* ---- breakpoints: sidebar on desktop, top bar + hamburger on tablets/phones ---- */
+@media (min-width: 901px) { .topbar { display: none; } }
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .nav-desktop, .btn-import, .btn-logout { display: none !important; }
+  .mobile-nav-menu { display: block; }
+  .app-layout { display: block; }
+}
+@media print { .sidebar { display: none !important; } .app-layout { display: block !important; } }
 
 `;
 
