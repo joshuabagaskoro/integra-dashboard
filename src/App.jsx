@@ -1765,7 +1765,8 @@ function AppSidebar({ tab, setTab, isAdmin, currentUser, handleLogout, userFeatu
           <IntegraLogo className="sb-logo" width={30} height={35} />
           <div className="sb-brand-text">
             <div className="sb-brand-name">INTEGRA</div>
-            <div className="sb-brand-sub">Operation Dashboard · 2026</div>
+            <div className="sb-brand-sub">Operation Dashboard</div>
+            <div className="sb-brand-sub sb-brand-year">2026</div>
           </div>
         </div>
         <button type="button" className="sb-toggle" onClick={toggle} aria-expanded={!collapsed}
@@ -7430,7 +7431,8 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .sb-logo { flex-shrink: 0; filter: drop-shadow(0 2px 6px rgba(255,107,53,.18)); }
 .sb-brand-text { min-width: 0; overflow: hidden; transition: opacity .2s var(--ease), max-width .3s var(--ease); max-width: 175px; }
 .sb-brand-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: .05em; white-space: nowrap; }
-.sb-brand-sub { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-top: 1px; }
+.sb-brand-sub { font-size: 11px; color: var(--text-3); white-space: nowrap; margin-top: 1px; line-height: 1.3; }
+.sb-brand-year { margin-top: 0; color: var(--text-4); font-family: 'JetBrains Mono', monospace; letter-spacing: .04em; }
 .sb-toggle { flex-shrink: 0; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px;
   background: transparent; border: 1px solid transparent; color: var(--text-3); cursor: pointer;
   transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
