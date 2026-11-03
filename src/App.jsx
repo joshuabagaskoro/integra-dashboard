@@ -2299,6 +2299,11 @@ function OverviewTab({ domes, barges, settings }) {
 
   const ungraded = useMemo(() => domes.filter((d) => d.ni <= 0 && d.stock > 0), [domes]);
   const ungradedStock = ungraded.reduce((s, d) => s + d.stock, 0);
+  const ungradedWhere = useMemo(() => {
+    const by = {};
+    ungraded.forEach((d) => { by[d.contractor] = (by[d.contractor] || 0) + d.stock; });
+    return Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => k).join(" and ");
+  }, [ungraded]);
 
   const heroSources = [inventoryStats, ...productionByContractor].map((c, i) => ({ id: c.id || "Inventory", amt: c.stock, grade: c.avgNi }));
 
@@ -2308,9 +2313,9 @@ function OverviewTab({ domes, barges, settings }) {
         <section className="glass banner">
           <AlertTriangle size={18} className="banner-icon" />
           <div>
-            <div className="banner-title">{fmt(ungradedStock)} WMT across {ungraded.length} domes has no Ni lab result yet</div>
+            <div className="banner-title">{fmt(ungradedStock)} WMT across {ungraded.length} {ungraded.length === 1 ? "dome has" : "domes have"} no Ni lab result yet</div>
             <div className="banner-body">
-              These domes are recorded with 0% Ni (untested), mostly in IMN-3 and IMN-4. They're excluded
+              {ungraded.length === 1 ? "This dome is" : "These domes are"} recorded with 0% Ni (untested){ungradedWhere ? ", mostly in " + ungradedWhere : ""}. They're excluded
               from auto-generated barging plans until real assay results are entered, so they won't
               silently drag blends down. They still count toward existing stock totals below.
             </div>
@@ -6628,7 +6633,7 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .gen-source-checks { display: flex; flex-direction: column; gap: 6px; padding-top: 3px; }
 .gen-simg-row { display: flex; gap: 6px; }
 .gen-simg-row select { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); border-radius: 8px;
-  color: #EAF0F6; font-size: 12.5px; padding: 7px 8px; width: 76px; flex-shrink: 0; }
+  color: #EAF0F6; font-size: 12.5px; padding: 7px 8px; width: 104px; flex-shrink: 0; }
 .gen-simg-row input { flex: 1; min-width: 0; }
 .gen-simg-row input:disabled { opacity: .4; }
 .gen-check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #D6DDE6; cursor: pointer; }
@@ -6781,8 +6786,11 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .target-pct-bad { color: #F87171; background: rgba(248,113,113,.12); }
 .target-bar-track { height: 7px; border-radius: 4px; background: rgba(255,255,255,.08); overflow: hidden; }
 .target-bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #22D3B8, #4ADE80); transition: width 300ms ease; }
-.target-row { display: flex; justify-content: space-between; align-items: baseline; }
-.target-label { font-size: 11px; color: #8A97A8; text-transform: uppercase; letter-spacing: .02em; font-weight: 600; }
+.target-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.target-row .target-value { margin-left: auto; text-align: right; white-space: nowrap; }
+.table-wrap-tall .data-table td:first-child, .table-wrap-tall .data-table th:first-child { position: sticky; left: 0; z-index: 1; background: #141B26; }
+.table-wrap-tall .data-table thead th:first-child { z-index: 3; }
+.target-label { white-space: nowrap; font-size: 11px; color: #8A97A8; text-transform: uppercase; letter-spacing: .02em; font-weight: 600; }
 .target-value { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 600; color: #B7C0CC; }
 .target-ni-target { font-size: 10.5px; color: #667080; font-weight: 400; }
 .target-ni-badge { align-self: flex-start; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 6px;
