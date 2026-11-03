@@ -1587,8 +1587,10 @@ function MultiSelectDropdown({ options, selected, onChange, allLabel = "All", no
   const ref = useRef(null);
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
     document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", handler); document.removeEventListener("keydown", onKey); };
   }, []);
 
   const isChecked = (opt) => selected === null || selected.includes(opt);
@@ -1645,8 +1647,10 @@ function SearchableDomeSelect({ options, value, onChange, placeholder }) {
   const ref = useRef(null);
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
     document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", handler); document.removeEventListener("keydown", onKey); };
   }, []);
 
   const selected = options.find((o) => o.id === value);
@@ -1686,7 +1690,7 @@ function SearchableDomeSelect({ options, value, onChange, placeholder }) {
 
 function NavButton({ icon: Icon, label, active, onClick, mobile }) {
   return (
-    <button className={`navbtn ${active ? "navbtn-active" : ""} ${mobile ? "navbtn-mobile" : ""}`} onClick={onClick}>
+    <button className={`navbtn ${active ? "navbtn-active" : ""} ${mobile ? "navbtn-mobile" : ""}`} onClick={onClick} aria-current={active ? "page" : undefined}>
       <Icon size={mobile ? 19 : 16} strokeWidth={2.3} />
       <span>{label}</span>
     </button>
@@ -2418,7 +2422,11 @@ function StockTab({ domes, barges = [], settings }) {
     else { setSortKey(key); setSortDir(-1); }
   };
   const Th = ({ k, children }) => (
-    <th onClick={() => toggleSort(k)} className="sortable">{children}{sortKey === k ? (sortDir === 1 ? " ▲" : " ▼") : ""}</th>
+    <th onClick={() => toggleSort(k)} className="sortable" tabIndex={0} role="columnheader"
+      aria-sort={sortKey === k ? (sortDir === 1 ? "ascending" : "descending") : "none"}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleSort(k); } }}>
+      {children}{sortKey === k ? (sortDir === 1 ? " ▲" : " ▼") : ""}
+    </th>
   );
 
   return (
@@ -5917,7 +5925,7 @@ function IntegraDashboardInner() {
         </div>
       </header>
 
-      <main className="content">
+      <main key={tab} className="content tab-enter">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && userFeatures.stock && <StockTab domes={domes} barges={barges} settings={settings} />}
         {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
@@ -6167,7 +6175,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
 /* ----------------------------- styles ----------------------------- */
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
 
 /* Browsers apply a default 8px margin to <body> unless explicitly reset — without this,
  * that default margin shows through as a white/light border around the app on a real
@@ -7079,6 +7087,210 @@ textarea:focus-visible, [tabindex]:focus-visible {
   .royalty-header, .royalty-row { grid-template-columns: 50px 70px 60px 70px 80px 100px 60px; font-size: 10px; padding: 10px 12px; }
   .log-header-row, .log-row { grid-template-columns: 1fr 70px 70px; font-size: 10px; padding: 10px 12px; }
 }
+
+/* ==========================================================================
+ * POLISH LAYER — design tokens, type scale, contrast, spacing, motion.
+ * Sits last on purpose: it refines the rules above without touching the invoice/plan
+ * "paper" sheets or print rules, which have to stay exactly as they are.
+ * ========================================================================== */
+:root {
+  --accent: #E35F0C;
+  --accent-soft: rgba(227,95,12,.14);
+  --text: #EAF0F6;
+  --text-2: #B7C0CC;
+  --text-3: #9AA6B6;   /* secondary labels (was #8A97A8 — slightly low contrast on dark glass) */
+  --text-4: #7F8B9D;   /* tertiary/meta (was #667080, ~3.4:1 — now ~5:1) */
+  --line: rgba(255,255,255,.09);
+  --ease: cubic-bezier(.22,.61,.36,1);
+  --t-fast: .15s;
+  --t-med: .24s;
+}
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+.app { color-scheme: dark; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
+  font-size: 14px; line-height: 1.5; }
+.app ::selection { background: rgba(227,95,12,.35); color: #fff; }
+.app button, .app input, .app select, .app textarea { font-family: inherit; }
+.app input[type="number"], .app .data-table td, .app .kpi-value, .app .stat-num { font-variant-numeric: tabular-nums; }
+
+/* ---------- contrast: lift the faintest greys ---------- */
+.table-meta, .note, .empty-note, .month-count, .target-ni-target, .compass, .dome-select-empty,
+.data-updated-badge, .stat-card-tag, .login-footer p, .invoice-placeholder, .month-name { color: var(--text-4); }
+.brand-sub, .kpi-label, .kpi-unit, .hero-desc, .stat-lbl, .card-label, .target-label, .meta-label,
+.filtered-summary-item span, .ring-sub, .info-field label, .gen-field label, .form-hint { color: var(--text-3); }
+.login-input::placeholder, .app input::placeholder { color: var(--text-4); }
+.note { font-style: normal; font-size: 12px; line-height: 1.55; }
+
+/* ---------- type scale: nothing under 10.5px ---------- */
+.stat-lbl, .month-count, .stat-card-tag, .target-unassayed-note, .card-unit { font-size: 10.5px; }
+.ring-sub { font-size: 9.5px; }
+.data-table th { font-size: 11px; padding: 10px 12px; letter-spacing: .04em; font-weight: 600; }
+.data-table td { font-size: 12.5px; padding: 9px 12px; line-height: 1.4; }
+.data-table-compact th { padding: 8px 10px; font-size: 11px; }
+.data-table-compact td { padding: 7px 10px; font-size: 12px; }
+.panel-head { font-size: 15px; letter-spacing: -.005em; }
+.hero-title { font-size: 22px; letter-spacing: -.01em; }
+.kpi-label { font-size: 11px; font-weight: 600; }
+
+/* ---------- spacing & surfaces ---------- */
+.content { padding: 12px 24px 56px; }
+.stack { gap: 20px; }
+.panel { padding: 22px; }
+.hero { padding: 28px; }
+.glass { transition: border-color var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease); }
+.panel-head { margin-bottom: 14px; }
+.panel-head-collapsible { margin-bottom: 4px; }
+.filter-toolbar { gap: 10px; margin-bottom: 14px; align-items: stretch; }
+.kpi { background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; min-width: 0;
+  transition: background-color var(--t-med) var(--ease), border-color var(--t-med) var(--ease), transform var(--t-med) var(--ease); }
+.kpi:hover { background: rgba(255,255,255,.055); border-color: rgba(255,255,255,.16); transform: translateY(-1px); }
+.kpi-value { font-size: 20px; line-height: 1.2; white-space: nowrap; }
+.kpi-row { gap: 12px; }
+.stat-card, .contractor-card, .target-card, .financial-card, .mini-stat-card, .grade-tier-card {
+  transition: transform var(--t-med) var(--ease), border-color var(--t-med) var(--ease), background-color var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease); }
+.stat-card:hover, .contractor-card:hover, .target-card:hover, .financial-card:hover, .grade-tier-card:hover {
+  transform: translateY(-2px); border-color: rgba(255,255,255,.2); box-shadow: 0 10px 24px rgba(0,0,0,.28); }
+.grade-tier-value { font-family: 'JetBrains Mono', monospace; font-size: 22px; letter-spacing: -.01em; }
+.grade-tier-card { background: rgba(255,255,255,.035); border: 1px solid var(--line); border-top: 3px solid; }
+
+/* ---------- navigation ---------- */
+.topbar { position: sticky; top: 0; z-index: 40; padding: 14px 24px;
+  background: rgba(7,10,16,.72); backdrop-filter: blur(16px) saturate(1.2); -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  border-bottom: 1px solid rgba(255,255,255,.05); margin-bottom: 14px; }
+.navbtn { transition: color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
+.navbtn:hover:not(.navbtn-active) { background: rgba(255,255,255,.05); }
+.navbtn-active { box-shadow: inset 0 0 0 1px rgba(227,95,12,.28); }
+.mobile-nav-panel { animation: pop-in var(--t-med) var(--ease); transform-origin: top right; }
+.mobile-nav-item { transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+
+/* ---------- buttons: one consistent feel (hover, press, disabled) ---------- */
+.btn-import, .btn-ghost, .btn-primary, .btn-invoice, .btn-invoice-mini, .btn-export-mini, .btn-status, .btn-export,
+.btn-toggle, .btn-export-pdf, .btn-logout, .btn-download-html, .btn-card-action, .chip, .zoom-btn, .login-button,
+.multiselect-btn, .dome-select-btn, .hamburger-btn, .icon-btn, .import-barge-label {
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+    transform .12s var(--ease), box-shadow var(--t-fast) var(--ease), filter var(--t-fast) var(--ease); }
+.btn-import:active, .btn-ghost:active, .btn-primary:active, .btn-invoice:active, .btn-invoice-mini:active, .btn-export-mini:active,
+.btn-status:active, .btn-export:active, .btn-toggle:active, .btn-export-pdf:active, .btn-logout:active, .btn-download-html:active,
+.btn-card-action:active, .chip:active, .zoom-btn:active:not(:disabled), .login-button:active { transform: scale(.97); }
+.btn-primary:hover { box-shadow: 0 6px 18px rgba(227,95,12,.18); }
+.btn-invoice:hover, .login-button:hover { box-shadow: 0 10px 24px rgba(227,95,12,.32); }
+.chip:hover:not(.chip-active) { border-color: rgba(255,255,255,.22); color: var(--text); }
+.app button:disabled, .app .btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-ghost, .btn-primary { font-family: inherit; }
+.import-barge-label:hover { background: rgba(227,95,12,.08); border-color: var(--accent); }
+.icon-btn { border-radius: 8px; padding: 6px; }
+.icon-btn:hover { background: rgba(248,113,113,.12); }
+
+/* ---------- form controls: unified hover/focus ---------- */
+.search-box, .filter-toolbar select, .multiselect-btn, .dome-select-btn, .cell-input, .info-input, .date-input,
+.gen-field input, .gen-field select, .add-dome-row select, .add-dome-row input, .form-grid input, .form-grid textarea, .modal-input, .login-input {
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease); }
+.search-box:hover, .filter-toolbar select:hover, .cell-input:hover, .info-input:hover:not(:disabled), .date-input:hover,
+.gen-field input:hover, .gen-field select:hover, .add-dome-row select:hover, .add-dome-row input:hover { border-color: rgba(255,255,255,.24); }
+.search-box:focus-within, .filter-toolbar select:focus, .cell-input:focus, .info-input:focus, .date-input:focus,
+.gen-field input:focus, .gen-field select:focus, .add-dome-row select:focus, .add-dome-row input:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(227,95,12,.16); background: rgba(255,255,255,.07); }
+.filter-toolbar select, .add-dome-row select, .gen-field select { cursor: pointer; }
+.search-box input, .dome-select-search input { font-family: inherit; }
+.multiselect-panel, .dome-select-panel { animation: pop-in var(--t-med) var(--ease); transform-origin: top left; }
+.multiselect-item, .dome-select-item { transition: background-color var(--t-fast) var(--ease); }
+.multiselect-item { padding: 8px 10px; }
+
+/* ---------- tables ---------- */
+.data-table td { transition: background-color var(--t-fast) var(--ease); }
+.data-table tr:hover td { background: rgba(255,255,255,.04); }
+.data-table th { background: #0C121A; box-shadow: 0 1px 0 rgba(255,255,255,.1); z-index: 1; transition: color var(--t-fast) var(--ease); }
+.data-table th.sortable:focus-visible { color: var(--accent); }
+.table-wrap, .table-wrap-tall, .tracker-list, .multiselect-list, .dome-select-list, .import-panel, .validation-panel, .invoice-panel {
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
+.table-wrap::-webkit-scrollbar, .tracker-list::-webkit-scrollbar, .multiselect-list::-webkit-scrollbar, .dome-select-list::-webkit-scrollbar { width: 8px; height: 8px; }
+.table-wrap::-webkit-scrollbar-thumb, .tracker-list::-webkit-scrollbar-thumb, .multiselect-list::-webkit-scrollbar-thumb, .dome-select-list::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.16); border-radius: 8px; }
+.table-wrap::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.28); }
+.table-wrap::-webkit-scrollbar-track { background: transparent; }
+.tracker-row { transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
+.tracker-row:hover { background: rgba(255,255,255,.045); border-color: rgba(255,255,255,.12); }
+.log-row, .royalty-row { transition: background-color var(--t-fast) var(--ease); }
+.log-row:hover, .royalty-row:hover { background: rgba(255,255,255,.04); }
+
+/* ---------- barge rows ---------- */
+.barge-list { gap: 10px; }
+.barge-row { transition: border-color var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease), background-color var(--t-med) var(--ease); }
+.barge-row:hover { border-color: rgba(255,255,255,.18); }
+.barge-row-top { padding: 14px 18px; transition: background-color var(--t-fast) var(--ease); border-radius: 22px; }
+.barge-row-top:hover { background: rgba(255,255,255,.03); }
+.barge-row-open .barge-row-top { border-radius: 22px 22px 0 0; }
+.chevron { transition: transform var(--t-med) var(--ease); }
+.barge-row-detail { padding: 8px 18px 18px; animation: expand-in .26s var(--ease); }
+.barge-no { font-size: 14px; }
+
+/* ---------- chips / badges ---------- */
+.badge, .barge-chip, .rollup-chip { transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
+.rollup-chip { padding: 5px 10px; font-size: 11px; }
+.legend { gap: 8px 20px; }
+
+/* ---------- map ---------- */
+.site-map-wrap { transition: border-color var(--t-med) var(--ease); }
+.site-map-wrap:hover { border-color: rgba(255,255,255,.14); }
+.map-tip-overlay { animation: tooltipPop .12s var(--ease); }
+@keyframes tooltipPop { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------- modals: fade the backdrop, lift the panel ---------- */
+.import-modal, .validation-modal, .invoice-modal { animation: modal-fade .18s ease; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.import-panel, .validation-panel, .invoice-panel, .modal-card { animation: modal-rise .26s var(--ease); }
+.import-close, .validation-close { padding: 6px; border-radius: 8px; transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.import-close:hover, .validation-close:hover { background: rgba(255,255,255,.08); color: var(--text); }
+.toast { animation: toast-in .24s var(--ease); }
+.toast-close { border-radius: 6px; transition: color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease); }
+.toast-close:hover { background: rgba(255,255,255,.08); }
+
+/* ---------- motion primitives ---------- */
+.tab-enter { animation: tab-enter .32s var(--ease); }
+@keyframes tab-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes modal-rise { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes expand-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes bar-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+/* Sections revealed by a toggle (contractor grids, tier tables) fade in rather than snapping */
+.contractor-grid, .targets-grid, .grade-tier-grid, .stat-card-row { animation: expand-in .28s var(--ease); }
+.stacked-bar { animation: bar-reveal .7s var(--ease); }
+.stacked-seg { transition: width .5s var(--ease); }
+.target-bar-fill { transition: width .6s var(--ease); }
+.panel-head-collapsible svg:last-child { transition: transform var(--t-med) var(--ease); }
+/* stagger the cards inside a freshly-shown grid */
+.stat-card-row > *, .contractor-grid > *, .targets-grid > *, .grade-tier-grid > *, .financial-cards-row > * { animation: expand-in .34s var(--ease) backwards; }
+.stat-card-row > *:nth-child(2), .contractor-grid > *:nth-child(2), .targets-grid > *:nth-child(2), .grade-tier-grid > *:nth-child(2), .financial-cards-row > *:nth-child(2) { animation-delay: .04s; }
+.stat-card-row > *:nth-child(3), .contractor-grid > *:nth-child(3), .targets-grid > *:nth-child(3), .grade-tier-grid > *:nth-child(3), .financial-cards-row > *:nth-child(3) { animation-delay: .08s; }
+.stat-card-row > *:nth-child(n+4), .contractor-grid > *:nth-child(n+4), .targets-grid > *:nth-child(n+4), .grade-tier-grid > *:nth-child(n+4), .financial-cards-row > *:nth-child(n+4) { animation-delay: .12s; }
+
+/* ---------- login / welcome ---------- */
+.login-box { animation: modal-rise .45s var(--ease); }
+.login-input:hover { border-color: rgba(255,255,255,.24); }
+.login-input:focus { border-color: var(--accent); }
+
+/* ---------- small screens ---------- */
+@media (max-width: 900px) {
+  .content { padding: 8px 16px 48px; }
+  .topbar { padding: 12px 16px; }
+}
+@media (max-width: 640px) {
+  .content { padding: 6px 12px 40px; }
+  .panel { padding: 16px; }
+  .hero { padding: 18px; }
+  .stack { gap: 14px; }
+  .kpi-value { font-size: 17px; }
+  .filter-toolbar > * { flex: 1 1 140px; min-width: 0; }
+  .search-box { flex-basis: 100%; }
+  .multiselect-btn, .dome-select-btn { min-width: 0; width: 100%; }
+  .icon-btn, .toast-close, .import-close, .validation-close { min-width: 36px; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+  .toast-stack { left: 12px; right: 12px; max-width: none; top: 10px; }
+  .barge-row-top { padding: 12px 14px; }
+  .barge-row-detail { padding: 6px 14px 14px; }
+  .tab-enter { animation-duration: .22s; }
+  .kpi-row > .kpi:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .grade-tier-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .grade-tier-value { font-size: 19px; }
+}
+
 `;
 
 // Wraps the real app in ErrorBoundary (recoverable crash screen instead of a blank white
