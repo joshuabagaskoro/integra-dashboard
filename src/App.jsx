@@ -666,6 +666,50 @@ function generateFromPool(pool, count, bargeSize, target, tolerance, simgTarget,
   return out;
 }
 
+/* Dome IDs coming from different files/sheets can differ by invisible formatting (extra or
+ * non-breaking spaces, a trailing dot, letter case). Matching on this normalized key keeps a
+ * barge linked to its dome even when the text isn't byte-for-byte identical. */
+function domeKey(id) {
+  return String(id || "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().replace(/\.+$/, "").toUpperCase();
+}
+function buildDomeIndex(domes) {
+  const m = new Map();
+  (domes || []).forEach((d) => m.set(domeKey(d.id), d));
+  return m;
+}
+
+/* A barge's source rows carry a COPY of each dome's Ni% taken when the dome was added. When
+ * stock/assay data changes later (Excel import, Google Sheets sync, an unassayed dome getting
+ * its lab result), those copies go stale and the barge keeps showing 0.00 / the old blend.
+ * This re-reads every source's Ni% from the current dome list, relinks IDs that only differ in
+ * formatting, and recomputes the barge's total, grade and status. Returns the same array
+ * object when nothing changed, so it is safe to run on every dome update. */
+function resyncBargesWithDomes(barges, domes, settings) {
+  if (!barges || !barges.length || !domes || !domes.length) return barges;
+  const index = buildDomeIndex(domes);
+  let anyChanged = false;
+  const next = barges.map((b) => {
+    // No dome breakdown recorded: nothing to recompute from, keep the sheet's own figures
+    if (!b.sources || !b.sources.length) return b;
+    let changed = false;
+    const sources = b.sources.map((src) => {
+      const d = index.get(domeKey(src.id));
+      if (!d) return src;
+      const ni = Number(d.ni) || 0;
+      if (d.id !== src.id || Math.abs(ni - (Number(src.grade) || 0)) > 1e-9) { changed = true; return { ...src, id: d.id, grade: ni }; }
+      return src;
+    });
+    const totalWMT = sources.reduce((sum, x) => sum + (Number(x.amt) || 0), 0);
+    const niSum = sources.reduce((sum, x) => sum + (Number(x.amt) || 0) * ((Number(x.grade) || 0) / 100), 0);
+    const grade = totalWMT > 0 ? (niSum / totalWMT) * 100 : 0;
+    // The barge-level grade read from the sheet can also be stale even when sources aren't
+    if (!changed && Math.abs(grade - (Number(b.grade) || 0)) < 1e-6 && Math.abs(totalWMT - (Number(b.totalWMT) || 0)) < 1e-6) return b;
+    anyChanged = true;
+    return { ...b, sources, totalWMT, grade, status: statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance, b.finalized) };
+  });
+  return anyChanged ? next : barges;
+}
+
 function poolFromDomes(domes, subtractBarges) {
   const pool = domes.map((d) => ({ id: d.id, contractor: d.contractor, grade: d.ni, remaining: d.stock, source: d.source || "inventory", simg: d.simg || 0, location: d.location || "" }));
   subtractBarges.forEach((b) => b.sources.forEach((s) => {
@@ -4856,6 +4900,15 @@ function IntegraDashboardInner() {
     } catch (e) {}
   }, []);
 
+  // Whatever updated the domes (Excel import, Sheets sync, finalize/reopen, a lab result
+  // arriving for an unassayed dome), barges must reflect each dome's CURRENT Ni%. Local
+  // correction only, same as the stock reconciliation in syncWithSheets: auto-writing from
+  // every browser would recreate the last-write-wins problem. The Excel import path already
+  // pushes the corrected barges to Sheets explicitly.
+  useEffect(() => {
+    setBarges((prev) => resyncBargesWithDomes(prev, domes, settings));
+  }, [domes, settings.bargeSize, settings.targetGrade, settings.tolerance]);
+
   // Session load on mount. Uses sessionStorage (not localStorage) specifically so the
   // "logout when browser closes" requirement actually holds — sessionStorage clears
   // automatically when the tab/browser closes, localStorage does not.
@@ -5184,11 +5237,14 @@ function IntegraDashboardInner() {
 
   const mapBargeFromSheetRow = (row, domesForGrade) => {
     const sourcesStr = row["Sources"] || "";
+    const domeIndex = buildDomeIndex(domesForGrade);
     const sources = sourcesStr.split(";").map((s) => s.trim()).filter(Boolean).map((s) => {
-      const [id, amtStr] = s.split(":");
-      const domeId = (id || "").trim();
-      const dome = domesForGrade.find((d) => d.id === domeId);
-      return { id: domeId, amt: cleanNum(amtStr), grade: dome ? dome.ni : 0 };
+      // Split on the LAST colon so an ID that ever contains ":" can't be cut in half
+      const cut = s.lastIndexOf(":");
+      const domeId = (cut >= 0 ? s.slice(0, cut) : s).trim();
+      const amtStr = cut >= 0 ? s.slice(cut + 1) : "";
+      const dome = domeIndex.get(domeKey(domeId));
+      return { id: dome ? dome.id : domeId, amt: cleanNum(amtStr), grade: dome ? dome.ni : 0 };
     });
     let stockAdjustments;
     try { stockAdjustments = row["Stock Adjustments"] ? JSON.parse(row["Stock Adjustments"]) : undefined; }
@@ -5890,20 +5946,7 @@ function IntegraDashboardInner() {
           // one-off manual reconciliation; doing it automatically here is what makes the
           // in-app Import button actually safe to use directly instead of going through
           // chat for every stock update.
-          const mergedById = {}; merged.forEach((d) => { mergedById[d.id] = d; });
-          const updatedBarges = barges.map((b) => {
-            let changed = false;
-            const newSources = b.sources.map((s) => {
-              const d = mergedById[s.id];
-              if (d && Math.abs((d.ni || 0) - s.grade) > 1e-9) { changed = true; return { ...s, grade: d.ni }; }
-              return s;
-            });
-            if (!changed) return b;
-            const totalWMT = newSources.reduce((sum, s) => sum + s.amt, 0);
-            const niSum = newSources.reduce((sum, s) => sum + s.amt * (s.grade / 100), 0);
-            const grade = totalWMT > 0 ? (niSum / totalWMT) * 100 : 0;
-            return { ...b, sources: newSources, totalWMT, grade, status: statusFor({ totalWMT, grade }, settings.bargeSize, settings.targetGrade, settings.tolerance, b.finalized) };
-          });
+          const updatedBarges = resyncBargesWithDomes(barges, merged, settings);
           setBarges(updatedBarges);
           setDataLastUpdated(importDate);
           try { localStorage.setItem("integraDataLastUpdated", importDate); } catch (e) {}
