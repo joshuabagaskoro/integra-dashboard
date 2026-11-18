@@ -2845,7 +2845,7 @@ function StockTab({ domes, barges = [], settings }) {
 
 /* ----------------------------- Barging Plan tab ----------------------------- */
 
-function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
+function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
   const { showToast } = useUIFeedback();
   const [open, setOpen] = useState(false);
   const [addDome, setAddDome] = useState("");
@@ -2967,7 +2967,7 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
   };
 
   return (
-    <div className={`barge-row glass ${barge.finalized ? "barge-final" : ""} ${open ? "barge-row-open" : ""}`}>
+    <div data-barge-no={barge.no} className={`barge-row glass ${barge.finalized ? "barge-final" : ""} ${open ? "barge-row-open" : ""} ${isNew ? "barge-row-new" : ""}`}>
       <div className="barge-row-top" onClick={() => setOpen(!open)}>
         <div className="barge-row-left">
           <ChevronDown size={16} className={`chevron ${open ? "chevron-open" : ""}`} />
@@ -2990,6 +2990,8 @@ function BargeRow({ barge, domesById, pool, onUpdate, onFinalize, onImport, onOp
             <FileText size={13} /> Invoice
           </button>
         )}
+        {/* Keeps totals/Ni/status lined up with finalized rows, which carry an extra Invoice button */}
+        {!barge.finalized && <span className="barge-action-spacer" aria-hidden="true" />}
       </div>
 
       {open && (
@@ -4837,6 +4839,23 @@ function IntegraDashboardInner() {
   useEffect(() => { if (loaded) window.storage?.set("integra-settings-v3", JSON.stringify(settings)).catch(() => {}); }, [settings, loaded]);
   useEffect(() => { if (loaded) window.storage?.set("integra-barges-v3", JSON.stringify(barges)).catch(() => {}); }, [barges, loaded]);
 
+  // iOS Safari zooms the page whenever a focused field's text is under 16px. Rather than
+  // force every field to 16px (which made phone forms look mismatched), add maximum-scale=1
+  // to the viewport on iOS only: iOS still allows pinch-zoom with it set, but stops the
+  // automatic focus zoom. Android is left untouched because there it would block pinch-zoom.
+  useEffect(() => {
+    try {
+      const ua = navigator.userAgent || "";
+      const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      if (!isIOS) return;
+      let meta = document.querySelector('meta[name="viewport"]');
+      if (!meta) { meta = document.createElement("meta"); meta.name = "viewport"; document.head.appendChild(meta); }
+      const base = (meta.getAttribute("content") || "width=device-width, initial-scale=1")
+        .split(",").map((x) => x.trim()).filter((x) => x && !/^maximum-scale/i.test(x));
+      meta.setAttribute("content", [...base, "maximum-scale=1"].join(", "));
+    } catch (e) {}
+  }, []);
+
   // Session load on mount. Uses sessionStorage (not localStorage) specifically so the
   // "logout when browser closes" requirement actually holds — sessionStorage clears
   // automatically when the tab/browser closes, localStorage does not.
@@ -6180,9 +6199,28 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
 
   const nextNo = () => (barges.length ? Math.max(...barges.map((b) => b.no)) + 1 : 1);
 
+  // Newly added barges get a brief highlight and are scrolled into view, so adding from
+  // either the top panel or the bottom bar always shows where the new barge landed.
+  const [newBargeNos, setNewBargeNos] = useState([]);
+  const generatorRef = useRef(null);
+  useEffect(() => {
+    if (!newBargeNos.length) return;
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-barge-no="${newBargeNos[0]}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    const t = setTimeout(() => setNewBargeNos([]), 2400);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [newBargeNos]);
+
   const addBlankBarge = () => {
     const no = nextNo();
+    setFilter("all"); // a new draft would be hidden behind e.g. the "Finalized" filter
     setBarges((prev) => [...prev, { no, shipDate: defaultShipDate(no, settings.planTarget), bargeName: "", tugboatName: "", sources: [], totalWMT: 0, grade: 0, status: "incomplete", finalized: false }]);
+    setNewBargeNos([no]);
+  };
+  const scrollToGenerator = () => {
+    generatorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const generateBarges = () => {
@@ -6215,7 +6253,9 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
     const maxProd = Math.max(1, parseInt(genMaxProdContractors) || 2);
     const generated = generateFromPool(genPool, n, qty, target, settings.tolerance, simgTarget, maxProd);
     const withNo = generated.map((g, i) => ({ no: start + i, shipDate: defaultShipDate(start + i, settings.planTarget), bargeName: "", tugboatName: "", finalized: false, ...g }));
+    setFilter("all");
     setBarges((prev) => [...prev, ...withNo]);
+    setNewBargeNos(withNo.map((b) => b.no));
   };
 
   const onUpdate = (no, sources, patch) => {
@@ -6260,7 +6300,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
         <Kpi label="Target grade" value={fmt(settings.targetGrade, 2)} unit="% Ni" />
       </section>
 
-      <section className="glass panel generate-panel">
+      <section className="glass panel generate-panel" ref={generatorRef}>
         <div className="panel-head"><Ship size={16} /><span>Add to the plan</span></div>
         {isFeatureEnabled("Barging_CreateManual", true) && (
           <button className="btn-ghost add-blank-btn" onClick={addBlankBarge}><Plus size={14} /> Add blank barge</button>
@@ -6326,7 +6366,10 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
           </div>
           <button className="btn-primary gen-submit" onClick={generateBarges}>Generate suggested plan</button>
         </div>
-        <div className="note">Generation rule: Targeted Ni is a floor and target+0.2% is a ceiling — barges are never blended outside that range. Lowest-Ni domes are used first as diluent. A barge can draw from any number of existing-inventory contractors, but at most "Max production contractors" production contractors (IMN-1–4, default 2). Beyond the first (lowest-Ni) production contractor, contractors with domes in the same location zone (e.g. UTARA/SELATAN) are preferred before reaching into a different zone. Domes below 1% or above 1.5% Ni are hard to source, so each is capped at 500 WMT per barge (spread across multiple barges instead). Targeted Si/Mg (when set) steers which domes are reached for first — it never excludes a dome, and the resulting barge's actual Si/Mg is shown on its row once generated. If there isn't enough on-spec ore left to reach a full barge within all active constraints, the barge is left incomplete rather than filled out of spec.</div>
+        <details className="gen-rule">
+          <summary>How the generator picks domes</summary>
+          <div className="note">Generation rule: Targeted Ni is a floor and target+0.2% is a ceiling — barges are never blended outside that range. Lowest-Ni domes are used first as diluent. A barge can draw from any number of existing-inventory contractors, but at most "Max production contractors" production contractors (IMN-1–4, default 2). Beyond the first (lowest-Ni) production contractor, contractors with domes in the same location zone (e.g. UTARA/SELATAN) are preferred before reaching into a different zone. Domes below 1% or above 1.5% Ni are hard to source, so each is capped at 500 WMT per barge (spread across multiple barges instead). Targeted Si/Mg (when set) steers which domes are reached for first — it never excludes a dome, and the resulting barge's actual Si/Mg is shown on its row once generated. If there isn't enough on-spec ore left to reach a full barge within all active constraints, the barge is left incomplete rather than filled out of spec.</div>
+        </details>
       </section>
 
       {barges.length > 0 && (
@@ -6347,10 +6390,22 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
           </div>
         )}
         {filtered.map((b) => (
-          <BargeRow key={b.no} barge={b} domesById={domesById} pool={pool}
+          <BargeRow key={b.no} barge={b} isNew={newBargeNos.includes(b.no)} domesById={domesById} pool={pool}
             onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} onCheckStatus={onCheckStatus} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />
         ))}
       </section>
+
+      {/* Second add point under the last barge, so a long plan doesn't need scrolling back up */}
+      {barges.length > 0 && isFeatureEnabled("Barging_CreateManual", true) && (
+        <section className="barge-add-bar">
+          <button type="button" className="barge-add-main" onClick={addBlankBarge}>
+            <Plus size={16} /> Add barge {String(nextNo()).padStart(2, "0")}
+          </button>
+          <button type="button" className="btn-ghost barge-add-gen" onClick={scrollToGenerator}>
+            <LayoutGrid size={14} /> Generate several…
+          </button>
+        </section>
+      )}
     </div>
   );
 }
@@ -6358,7 +6413,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
 /* ----------------------------- styles ----------------------------- */
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 /* Browsers apply a default 8px margin to <body> unless explicitly reset — without this,
  * that default margin shows through as a white/light border around the app on a real
@@ -7589,6 +7644,63 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 @media print { .sidebar { display: none !important; } .app-layout { display: block !important; } }
 
 
+
+/* ============================ CONSISTENCY PASS ============================ */
+/* One font for every form field: Inter with tabular figures. Fields previously mixed
+ * JetBrains Mono (number boxes), Inter (text) and the system font (dropdowns, dates). */
+.app input:not([type="checkbox"]):not([type="radio"]), .app select, .app textarea, .date-input {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-variant-numeric: tabular-nums; font-weight: 500; letter-spacing: 0; }
+.app input::placeholder, .app textarea::placeholder { font-family: 'Inter', sans-serif; font-weight: 400; color: #5E6A7A; opacity: 1; }
+.app select { -webkit-appearance: none; appearance: none; padding-right: 28px !important;
+  background-image: linear-gradient(45deg, transparent 50%, #8A97A8 50%), linear-gradient(135deg, #8A97A8 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+.app select:disabled { opacity: .5; }
+.app input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.75); cursor: pointer; opacity: .8; }
+
+/* Barge rows line up whether or not the Invoice button is there */
+.app .btn-invoice-mini { box-sizing: border-box; width: 88px; min-width: 88px; justify-content: center; }
+.barge-action-spacer { width: 88px; margin-left: 8px; flex-shrink: 0; }
+
+/* Brief highlight on barges that were just added */
+.barge-row-new { animation: bargeNewPulse 2.2s ease; }
+@keyframes bargeNewPulse {
+  0% { box-shadow: 0 0 0 0 rgba(227,95,12,0); border-color: rgba(227,95,12,.0); }
+  15% { box-shadow: 0 0 0 3px rgba(227,95,12,.45); border-color: rgba(227,95,12,.8); }
+  100% { box-shadow: 0 0 0 0 rgba(227,95,12,0); }
+}
+
+/* Add bar under the last barge */
+.barge-add-bar { display: flex; gap: 10px; align-items: stretch; margin-top: 2px; }
+.barge-add-main { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 50px;
+  border-radius: 14px; border: 1.5px dashed rgba(227,95,12,.45); background: rgba(227,95,12,.06); color: #FFB27A;
+  font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 180ms ease; }
+.barge-add-main:hover { background: rgba(227,95,12,.13); border-color: rgba(227,95,12,.8); }
+.barge-add-main:active { transform: scale(.99); }
+.barge-add-gen { min-height: 50px; display: inline-flex; align-items: center; gap: 8px; padding: 0 18px; border-radius: 14px; }
+
+/* Buttons use sentence case everywhere (a few card/settings buttons were ALL CAPS) */
+.app .btn-card-action, .app .btn-settings-action { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 600; }
+.app .btn-card-action { padding: 9px 12px; }
+/* Pickers that are buttons (contractor multiselect, dome picker) match the native dropdowns */
+.app .multiselect-btn, .app .dome-select-btn { font-size: 13px; font-weight: 500; }
+/* Royalty total: label and figure never squeeze into two broken lines */
+.royalty-summary { gap: 12px; flex-wrap: wrap; }
+.royalty-summary .total { white-space: nowrap; margin-left: auto; }
+
+/* Keep scrolled-to panels clear of the sticky top bar */
+.generate-panel, .barge-row { scroll-margin-top: 20px; }
+@media (max-width: 640px) { .generate-panel, .barge-row { scroll-margin-top: 84px; } }
+
+/* Collapsible generator rule */
+.gen-rule { margin-top: 12px; }
+.gen-rule > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: #9AA6B6; padding: 4px 0; transition: color 160ms ease; }
+.gen-rule > summary::-webkit-details-marker { display: none; }
+.gen-rule > summary::before { content: "+"; display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; border-radius: 5px; border: 1px solid rgba(255,255,255,.18); font-size: 12px; line-height: 1; }
+.gen-rule[open] > summary::before { content: "−"; }
+.gen-rule > summary:hover { color: #EAF0F6; }
+.gen-rule > .note { margin-top: 8px; animation: tabFadeIn 200ms ease; }
+@keyframes tabFadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
 /* ============================ MOBILE / TOUCH ============================ */
 html { -webkit-tap-highlight-color: transparent; }
 .app button, .app a, .app select, .app label, .app [role="button"], .app th.sortable { touch-action: manipulation; }
@@ -7608,9 +7720,20 @@ html { -webkit-tap-highlight-color: transparent; }
 }
 
 @media (max-width: 640px) {
-  /* iOS Safari zooms the whole page when a focused field is under 16px — keep every input at 16px */
+  /* Form fields share one size with the text around them. iOS focus-zoom is prevented by the
+   * viewport tweak in IntegraDashboardInner (iOS only), not by forcing 16px fields, which made
+   * dates, numbers and dropdowns render much larger than everything else on phones. */
   .app input:not([type="checkbox"]):not([type="radio"]), .app select, .app textarea,
-  .modal-input, .login-input, .search-box input, .dome-select-search input { font-size: 16px; }
+  .modal-input, .login-input, .search-box input, .dome-select-search input { font-size: 14px; }
+  .gen-simg-row select { width: 128px; }
+  .app .multiselect-btn, .app .dome-select-btn { font-size: 14px; }
+  .royalty-summary { flex-direction: column; align-items: flex-start; }
+  .royalty-summary .total { margin-left: 0; font-size: 18px; }
+  .app .barge-row-top > input.date-input { font-size: 13px; padding: 7px 10px; min-height: 36px; }
+  .app .btn-invoice-mini { width: auto; }
+  .barge-action-spacer { display: none; }
+  .barge-add-bar { flex-direction: column; }
+  .barge-add-bar > * { width: 100%; justify-content: center; }
   .app input[type="checkbox"], .app input[type="radio"] { width: 20px; height: 20px; }
 
   /* TEST ACCOUNT badge sat on top of the hamburger button — park it bottom-left instead */
