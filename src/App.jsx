@@ -4392,7 +4392,7 @@ function LoginScreen({ onLogin, error }) {
           <div className="login-panel-brand-content">
             <BrandMark size={48} />
             <div className="login-panel-brand-name">INTEGRA</div>
-            <div className="login-panel-brand-tag">Nickel Ore Barging<br />Management System</div>
+            <div className="login-panel-brand-tag">Nickel Ore<br />Operating System</div>
           </div>
           <div className="login-panel-brand-foot">PT Integra Mining Nusantara</div>
         </div>
@@ -4421,7 +4421,7 @@ function LoginScreen({ onLogin, error }) {
               </div>
             </div>
             {error && <div className="login-error">{error}</div>}
-            <button type="submit" className="login-button">Sign In</button>
+            <button type="submit" className="login-button">Sign in</button>
           </form>
 
           <div className="login-footer">
@@ -4815,6 +4815,9 @@ function IntegraDashboardInner() {
   const [currentUser, setCurrentUser] = useState(null); // { username, role }
   const [loginError, setLoginError] = useState("");
   const [showWelcome, setShowWelcome] = useState(false);
+  // True from a fresh sign-in until the dashboard's reveal animation has played once.
+  // Not set when a session is restored on reload, so refreshing doesn't replay it.
+  const [revealPending, setRevealPending] = useState(false);
   const [loginHistory, setLoginHistory] = useState([]);
   const isAdmin = currentUser?.role === "admin";
   const isOperation = currentUser?.role === "operation";
@@ -4975,10 +4978,11 @@ function IntegraDashboardInner() {
     setCurrentUser(user);
     setIsLoggedIn(true);
     setShowWelcome(true);
+    setRevealPending(true);
     loadUserFeaturesFromSheets(username);
     loadUserDetailedFeatures(username);
     if (username === "dev") { loadAllUsersAndFlags(); loadAllDetailedFlags(); }
-    setTimeout(() => setShowWelcome(false), 3000);
+    setTimeout(() => setShowWelcome(false), 2200);
   };
 
   // Hybrid login: the 3 core accounts (dev/integra/operation) authenticate instantly
@@ -5981,6 +5985,16 @@ function IntegraDashboardInner() {
   // above, not before). Each includes its own <style>{CSS}</style> because these bypass
   // the main .app wrapper below, which is otherwise the only place the stylesheet is
   // injected — without this, the login/welcome screens render with zero CSS applied.
+  // Safety net for the sign-in reveal: if the animationend event never arrives (tab in the
+  // background, reduced-motion quirks), clear the reveal state anyway once the dashboard
+  // is actually on screen, so the clipping can never get stuck on.
+  const dashboardVisible = isLoggedIn && !showWelcome && !(domes.length === 0 && !lastSyncTime && !syncSkipped);
+  useEffect(() => {
+    if (!revealPending || !dashboardVisible) return;
+    const t = setTimeout(() => setRevealPending(false), 1600);
+    return () => clearTimeout(t);
+  }, [revealPending, dashboardVisible]);
+
   if (!isLoggedIn) {
     return (
       <>
@@ -6008,8 +6022,21 @@ function IntegraDashboardInner() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${revealPending ? "app-reveal" : ""}`}
+      onAnimationEnd={(e) => { if (revealPending && e.target === e.currentTarget) setRevealPending(false); }}>
       <style>{CSS}</style>
+      {revealPending && typeof document !== "undefined" && createPortal(
+        <div className="reveal-backdrop" aria-hidden="true">
+          {/* Same layout as WelcomeScreen, so the hand-off into the reveal has no jump */}
+          <div className="welcome-content reveal-backdrop-content">
+            <div className="welcome-logo"><BrandMark size={64} /></div>
+            <h1 className="welcome-title">Welcome to Integra OS</h1>
+            <p className="welcome-subtitle">Signed in as <strong>{currentUser?.username}</strong> ({currentUser?.role})</p>
+            <div className="welcome-spinner" style={{ visibility: "hidden" }} />
+          </div>
+        </div>,
+        document.body
+      )}
       <div className="bg-glow bg-glow-a" />
       <div className="bg-glow bg-glow-b" />
 
@@ -6464,7 +6491,7 @@ const CSS = `
  * platform level). Also sets html/body background to match .app's darkest tone, so
  * there's no flash of white before React mounts, and no gap is visible even if .app's
  * own min-height:100vh comes up a pixel short due to mobile browser chrome quirks. */
-html, body { margin: 0; padding: 0; background: #070A10; }
+html, body { margin: 0; padding: 0; background: #070A10; color: #EAF0F6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; -webkit-font-smoothing: antialiased; }
 #root { margin: 0; padding: 0; }
 
 * { box-sizing: border-box; }
@@ -7202,7 +7229,7 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .form-group { display: flex; flex-direction: column; gap: 6px; }
 .form-group label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: #B7C0CC; }
 .login-input { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); border-radius: 10px;
-  padding: 12px 14px; font-size: 14px; color: #EAF0F6; font-family: 'JetBrains Mono', monospace; box-sizing: border-box; }
+  padding: 12px 14px; font-size: 14px; color: #EAF0F6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-weight: 500; box-sizing: border-box; }
 .login-input:focus { outline: none; border-color: rgba(227,95,12,.5); box-shadow: 0 0 0 3px rgba(227,95,12,.12); }
 .login-input::placeholder { color: #667080; }
 .password-input-wrap { position: relative; display: flex; }
@@ -7216,7 +7243,7 @@ textarea:focus-visible, [tabindex]:focus-visible {
 @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 .login-button { display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #E35F0C, #C94E08);
   border: none; border-radius: 10px; padding: 13px 16px; font-size: 13px; font-weight: 700; color: #fff; cursor: pointer;
-  text-transform: uppercase; letter-spacing: .05em; margin-top: 8px; font-family: 'Space Grotesk', sans-serif;
+  text-transform: none; letter-spacing: .01em; margin-top: 8px; font-family: 'Space Grotesk', sans-serif; font-size: 14.5px;
   box-shadow: 0 8px 20px rgba(227,95,12,.25); }
 .login-button:hover { filter: brightness(1.08); }
 .login-footer { text-align: center; margin-top: 24px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.06); }
@@ -7743,6 +7770,34 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .gen-rule > summary:hover { color: #EAF0F6; }
 .gen-rule > .note { margin-top: 8px; animation: tabFadeIn 200ms ease; }
 @keyframes tabFadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+
+/* ============================ SIGN-IN REVEAL ============================ */
+/* After the welcome screen, the dashboard opens as an expanding circle from the centre of
+ * the screen, where the welcome logo sat, so it reads as one continuous motion. Positions
+ * use vw/vh so the circle is centred on what the person sees, not the whole page height. */
+.app-reveal { position: relative; z-index: 1; animation: appReveal 1050ms cubic-bezier(.76, 0, .18, 1) both; }
+@keyframes appReveal {
+  0% { clip-path: circle(0px at 50vw 50vh); }
+  100% { clip-path: circle(150vmax at 50vw 50vh); }
+}
+.reveal-backdrop { position: fixed; inset: 0; z-index: 0; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 20% 0%, #101826 0%, #070A10 55%, #050709 100%); pointer-events: none; }
+.reveal-backdrop .welcome-content, .reveal-backdrop .welcome-logo, .reveal-backdrop .welcome-title, .reveal-backdrop .welcome-subtitle { animation: none; }
+.reveal-backdrop-content { animation: revealLogo 1050ms cubic-bezier(.76, 0, .18, 1) both !important; }
+@keyframes revealLogo { 0% { transform: scale(1); opacity: 1; } 55% { transform: scale(1.06); opacity: .55; } 100% { transform: scale(1.12); opacity: 0; } }
+/* The dashboard's own content eases in slightly while the circle opens */
+.app-reveal .content, .app-reveal .sidebar, .app-reveal .topbar { animation: revealContent 1050ms cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes revealContent { 0% { transform: scale(.985); opacity: .4; } 100% { transform: none; opacity: 1; } }
+/* Welcome screen leaves room for the reveal: shorter, and the title fades in after the logo */
+.welcome-title { animation: welcomeText 600ms 120ms ease both; }
+.welcome-subtitle { animation: welcomeText 600ms 220ms ease both; }
+@keyframes welcomeText { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .app-reveal { animation: appRevealFade 300ms ease both; }
+  @keyframes appRevealFade { from { opacity: 0; } to { opacity: 1; } }
+  .app-reveal .content, .app-reveal .sidebar, .app-reveal .topbar, .reveal-backdrop-content { animation: none !important; }
+}
 
 /* ============================ MOBILE / TOUCH ============================ */
 html { -webkit-tap-highlight-color: transparent; }
