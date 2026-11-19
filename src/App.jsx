@@ -7773,22 +7773,22 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 
 
 /* ============================ SIGN-IN REVEAL ============================ */
-/* After the welcome screen, the dashboard opens as an expanding circle from the centre of
- * the screen, where the welcome logo sat, so it reads as one continuous motion. Positions
- * use vw/vh so the circle is centred on what the person sees, not the whole page height. */
-.app-reveal { position: relative; z-index: 1; animation: appReveal 1050ms cubic-bezier(.76, 0, .18, 1) both; }
+/* After the welcome screen, the dashboard slides up from the bottom edge of the screen and
+ * covers the welcome screen. The clip is an inset (not transform), so the content inside
+ * stays still and sharp while the edge travels, and it never causes layout work. */
+.app-reveal { position: relative; z-index: 1; animation: appReveal 900ms cubic-bezier(.65, 0, .25, 1) both; will-change: clip-path; }
 @keyframes appReveal {
-  0% { clip-path: circle(0px at 50vw 50vh); }
-  100% { clip-path: circle(150vmax at 50vw 50vh); }
+  0% { clip-path: inset(100% 0 0 0); }
+  100% { clip-path: inset(0 0 0 0); }
 }
 .reveal-backdrop { position: fixed; inset: 0; z-index: 0; display: flex; align-items: center; justify-content: center;
   background: radial-gradient(circle at 20% 0%, #101826 0%, #070A10 55%, #050709 100%); pointer-events: none; }
 .reveal-backdrop .welcome-content, .reveal-backdrop .welcome-logo, .reveal-backdrop .welcome-title, .reveal-backdrop .welcome-subtitle { animation: none; }
-.reveal-backdrop-content { animation: revealLogo 1050ms cubic-bezier(.76, 0, .18, 1) both !important; }
-@keyframes revealLogo { 0% { transform: scale(1); opacity: 1; } 55% { transform: scale(1.06); opacity: .55; } 100% { transform: scale(1.12); opacity: 0; } }
+.reveal-backdrop-content { animation: revealLift 900ms cubic-bezier(.65, 0, .25, 1) both !important; }
+@keyframes revealLift { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(-36px); opacity: 0; } }
 /* The dashboard's own content eases in slightly while the circle opens */
-.app-reveal .content, .app-reveal .sidebar, .app-reveal .topbar { animation: revealContent 1050ms cubic-bezier(.2, .7, .2, 1) both; }
-@keyframes revealContent { 0% { transform: scale(.985); opacity: .4; } 100% { transform: none; opacity: 1; } }
+.app-reveal .content, .app-reveal .sidebar, .app-reveal .topbar { animation: revealContent 900ms cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes revealContent { 0% { transform: translateY(24px); opacity: .6; } 100% { transform: none; opacity: 1; } }
 /* Welcome screen leaves room for the reveal: shorter, and the title fades in after the logo */
 .welcome-title { animation: welcomeText 600ms 120ms ease both; }
 .welcome-subtitle { animation: welcomeText 600ms 220ms ease both; }
