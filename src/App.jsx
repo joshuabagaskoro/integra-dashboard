@@ -1614,11 +1614,12 @@ function StatusBadge({ status }) {
   return <span className={`badge ${m.cls}`}><Icon size={12} strokeWidth={2.5} />{m.text}</span>;
 }
 
-function Kpi({ label, value, unit, accent }) {
+function Kpi({ label, value, unit, accent, sub }) {
   return (
     <div className="kpi">
       <div className="kpi-label">{label}</div>
       <div className={`kpi-value ${accent ? "kpi-" + accent : ""}`}>{value}<span className="kpi-unit">{unit}</span></div>
+      {sub && <div className="kpi-sub">{sub}</div>}
     </div>
   );
 }
@@ -2371,6 +2372,10 @@ function OverviewTab({ domes, barges, settings }) {
   // should show. totalProduced = stock still on hand + stock already barged out captures
   // everything actually produced to date, regardless of where it currently sits.
   const totalProduced = totalExisting + actualBarged;
+  // Latest FINALIZED barge number (only finalized barges are deducted from stock), plus how
+  // many drafts are still being planned, so the Overview shows where the plan stands at a glance.
+  const lastFinalizedNo = barges.reduce((m, b) => (b.finalized && b.no > m ? b.no : m), 0);
+  const draftBargeCount = barges.filter((b) => !b.finalized).length;
   const overallNi = totalExisting > 0 ? domes.reduce((s, d) => s + d.stock * d.ni, 0) / totalExisting : 0;
 
   const inventoryStats = useMemo(() => aggregateDomes(domes.filter((d) => d.source === "inventory")), [domes]);
@@ -2434,7 +2439,10 @@ function OverviewTab({ domes, barges, settings }) {
           <div className="hero-desc">{domes.length} domes on record, as of {TODAY.toDateString()}.</div>
           <div className="kpi-row">
             <Kpi label="2026 Quota" value={fmt(settings.totalQuota)} unit="WMT" />
-            <Kpi label="Actual barged" value={fmt(actualBarged)} unit="WMT" accent="good" />
+            <Kpi label="Actual barged" value={fmt(actualBarged)} unit="WMT" accent="good"
+              sub={lastFinalizedNo > 0
+                ? `Through barge #${String(lastFinalizedNo).padStart(2, "0")}${draftBargeCount > 0 ? ` · ${draftBargeCount} draft${draftBargeCount > 1 ? "s" : ""} in progress` : ""}`
+                : (draftBargeCount > 0 ? `No finalized barge yet · ${draftBargeCount} draft${draftBargeCount > 1 ? "s" : ""}` : "No barges finalized yet")} />
             <Kpi label="Production stock" value={fmt(totalExistingProduction)} unit="WMT" />
             <Kpi label="Inventory stock" value={fmt(totalExistingInventory)} unit="WMT" />
             <Kpi label="Quota coverage" value={fmt(quotaCoverage, 1)} unit="%" accent={quotaCoverage >= 100 ? "good" : "warn"} />
@@ -7715,6 +7723,7 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 
 
 
+.kpi-sub { font-size: 11px; color: #8A97A8; margin-top: 4px; line-height: 1.35; font-family: 'Inter', sans-serif; font-weight: 500; }
 /* ============================ CONSISTENCY PASS ============================ */
 /* One font for every form field: Inter with tabular figures. Fields previously mixed
  * JetBrains Mono (number boxes), Inter (text) and the system font (dropdowns, dates). */
