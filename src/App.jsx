@@ -2933,9 +2933,8 @@ function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize,
   const setBargeName = (v) => onUpdate(barge.no, null, { bargeName: v });
   const setTugboatName = (v) => onUpdate(barge.no, null, { tugboatName: v });
 
-  // Sale price is typed as text and saved on blur/Enter, so half-typed numbers never land in
-  // state or Sheets. It saves explicitly (like the import path), since a background sync must
-  // not overwrite it.
+  // Sale price is typed as text and committed on blur/Enter, so half-typed numbers never land
+  // in state or Sheets.
   const savedPriceText = barge.salePrice > 0 ? String(barge.salePrice) : "";
   const [priceText, setPriceText] = useState(savedPriceText);
   useEffect(() => { setPriceText(barge.salePrice > 0 ? String(barge.salePrice) : ""); }, [barge.salePrice]);
@@ -2944,8 +2943,7 @@ function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize,
     const next = trimmed === "" ? undefined : Number(trimmed);
     if (next !== undefined && !(isFinite(next) && next >= 0)) { setPriceText(savedPriceText); return; }
     if ((barge.salePrice || undefined) === next) return;
-    const updated = onUpdate(barge.no, null, { salePrice: next });
-    onDataCommitted?.(updated);
+    onUpdate(barge.no, null, { salePrice: next }); // saved to Sheets by the barge edit autosave
   };
   const estRevenue = calculateRevenue ? calculateRevenue(barge) : 0;
 
@@ -3309,6 +3307,288 @@ function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled, dismiss
 }
 
 /* ============================================================
+ * Collapsible panel — used by the Financials tab. Height animates via grid-template-rows
+ * (0fr <-> 1fr), so it is smooth without measuring content. Open/closed is remembered per
+ * browser. Collapsed content is inert, so keyboard focus can't land inside it.
+ * ============================================================ */
+function CollapsibleSection({ storageKey, icon, title, subtitle, actions, defaultOpen = true, children }) {
+  const key = `integra.fin.${storageKey}.open`;
+  const [open, setOpen] = useState(() => {
+    try { const v = localStorage.getItem(key); return v === null ? defaultOpen : v === "1"; } catch (e) { return defaultOpen; }
+  });
+  const toggle = () => setOpen((o) => {
+    const next = !o;
+    try { localStorage.setItem(key, next ? "1" : "0"); } catch (e) {}
+    return next;
+  });
+  const bodyId = `cs-body-${storageKey}`;
+  // "inert" is set on the DOM node directly: React 18 and 19 treat the attribute differently,
+  // and this works the same in both.
+  const bodyRef = useRef(null);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    if (open) el.removeAttribute("inert"); else el.setAttribute("inert", "");
+  }, [open]);
+  return (
+    <section className={`glass panel cs ${open ? "cs-open" : "cs-closed"}`}>
+      <div className="cs-head">
+        <button type="button" className="panel-head cs-toggle" onClick={toggle} aria-expanded={open} aria-controls={bodyId}>
+          {icon}<span className="cs-title">{title}</span>
+          {subtitle && <span className="cs-sub">{subtitle}</span>}
+          <ChevronDown size={18} className="cs-chevron" />
+        </button>
+        {actions && <div className="cs-actions">{actions}</div>}
+      </div>
+      <div className="cs-body" id={bodyId} ref={bodyRef} aria-hidden={!open}>
+        <div className="cs-inner"><div className="cs-pad">{children}</div></div>
+      </div>
+    </section>
+  );
+}
+
+/* ============================================================
+ * TrendChart — single-series line chart, hand-built SVG (no chart library in this app).
+ * One axis, 2px line, light area wash, recessive grid. Hover/tap shows a crosshair and a
+ * tooltip; arrow keys step through points when the chart has focus.
+ * ============================================================ */
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+function isoToUtcMs(iso) {
+  const [y, m, d] = String(iso || "").slice(0, 10).split("-").map(Number);
+  return y && m && d ? Date.UTC(y, m - 1, d) : NaN;
+}
+function niceTicks(min, max, count = 4) {
+  const span = max - min || 1;
+  const raw = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const lo = Math.floor(min / step) * step;
+  const hi = Math.ceil(max / step) * step;
+  const out = [];
+  for (let v = lo; v <= hi + step / 2; v += step) out.push(Math.round(v / step) * step);
+  return out;
+}
+function fmtIdrShort(v, digits = 1) {
+  const a = Math.abs(v);
+  const f = (n, d) => n.toLocaleString("id-ID", { minimumFractionDigits: 0, maximumFractionDigits: d });
+  if (a >= 1e12) return `Rp ${f(v / 1e12, digits)} T`;
+  if (a >= 1e9) return `Rp ${f(v / 1e9, digits)} M`;
+  if (a >= 1e6) return `Rp ${f(v / 1e6, 0)} Jt`;
+  return `Rp ${f(v, 0)}`;
+}
+
+function TrendChart({ series, color, zeroBased = false, yTick, tipValue, xTick, tipDate, height = 190, emptyText, label }) {
+  const wrapRef = useRef(null);
+  const [w, setW] = useState(560);
+  const [hover, setHover] = useState(null);
+  const gradId = useRef(`tg-${Math.random().toString(36).slice(2, 9)}`).current;
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([entry]) => setW(Math.max(240, Math.round(entry.contentRect.width))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [series.length > 0]); // re-attach when the chart goes from empty to drawn
+
+  if (!series.length) return <div className="trend-empty">{emptyText}</div>;
+
+  const pad = { l: 60, r: 14, t: 14, b: 26 };
+  const iw = Math.max(10, w - pad.l - pad.r);
+  const ih = height - pad.t - pad.b;
+  const ts = series.map((p) => p.t);
+  let t0 = Math.min(...ts), t1 = Math.max(...ts);
+  if (t0 === t1) { t0 -= 15 * 864e5; t1 += 15 * 864e5; }
+  const ys = series.map((p) => p.y);
+  let ymin = Math.min(...ys), ymax = Math.max(...ys);
+  if (zeroBased) ymin = Math.min(0, ymin);
+  else { const m = (ymax - ymin) * 0.12 || Math.abs(ymax) * 0.02 || 1; ymin -= m; ymax += m; }
+  if (ymin === ymax) { const d = Math.abs(ymax) * 0.05 || 1; ymax += d; if (!zeroBased) ymin -= d; }
+  const ticks = niceTicks(ymin, ymax, 4);
+  const yLo = ticks[0], yHi = ticks[ticks.length - 1];
+  const x = (t) => pad.l + ((t - t0) / (t1 - t0)) * iw;
+  const y = (v) => pad.t + (1 - (v - yLo) / (yHi - yLo || 1)) * ih;
+
+  const pts = series.map((p) => [x(p.t), y(p.y)]);
+  const line = pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
+  const area = `${line} L${pts[pts.length - 1][0].toFixed(1)},${(pad.t + ih).toFixed(1)} L${pts[0][0].toFixed(1)},${(pad.t + ih).toFixed(1)} Z`;
+
+  // x labels sit on real data points, thinned to what fits
+  const maxLabels = Math.max(2, Math.floor(iw / 78));
+  const stepIdx = Math.max(1, Math.ceil(series.length / maxLabels));
+  const xLabelIdx = series.map((_, i) => i).filter((i) => i % stepIdx === 0 || i === series.length - 1);
+  // The latest point is always labelled; if it crowds the label before it, drop that one instead
+  if (xLabelIdx.length > 2 && xLabelIdx[xLabelIdx.length - 1] - xLabelIdx[xLabelIdx.length - 2] < stepIdx * 0.6) xLabelIdx.splice(xLabelIdx.length - 2, 1);
+
+  const nearest = (px) => {
+    let best = 0, bd = Infinity;
+    pts.forEach(([qx], i) => { const d = Math.abs(qx - px); if (d < bd) { bd = d; best = i; } });
+    return best;
+  };
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setHover(nearest((e.clientX - r.left) * (w / r.width)));
+  };
+  const onKey = (e) => {
+    if (e.key === "ArrowRight") { e.preventDefault(); setHover((h) => (h === null ? 0 : Math.min(series.length - 1, h + 1))); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); setHover((h) => (h === null ? series.length - 1 : Math.max(0, h - 1))); }
+    if (e.key === "Escape") setHover(null);
+  };
+  const hp = hover !== null ? pts[hover] : null;
+  const showMarkers = series.length <= 36;
+  const tipW = 168;
+
+  return (
+    <div className="trend-chart" ref={wrapRef}>
+      <svg width={w} height={height} viewBox={`0 0 ${w} ${height}`} role="img" tabIndex={0}
+        aria-label={`${label}: ${series.length} points, latest ${tipValue(series[series.length - 1].y)}. Use left and right arrow keys to read values.`}
+        onPointerMove={onMove} onPointerDown={onMove} onPointerLeave={() => setHover(null)} onKeyDown={onKey} onBlur={() => setHover(null)}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {ticks.map((v) => (
+          <g key={v}>
+            <line x1={pad.l} x2={pad.l + iw} y1={y(v)} y2={y(v)} stroke="rgba(255,255,255,.06)" strokeWidth="1" />
+            <text x={pad.l - 8} y={y(v)} dy="0.35em" textAnchor="end" className="trend-axis">{yTick(v)}</text>
+          </g>
+        ))}
+        {xLabelIdx.map((i) => (
+          <text key={i} x={pts[i][0]} y={height - 8} textAnchor={series.length === 1 ? "middle" : i === 0 ? "start" : i === series.length - 1 ? "end" : "middle"} className="trend-axis">{xTick(series[i].t)}</text>
+        ))}
+        {series.length > 1 && <path d={area} fill={`url(#${gradId})`} />}
+        {series.length > 1 && <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
+        {showMarkers && pts.map(([px, py], i) => (
+          <circle key={i} cx={px} cy={py} r={hover === i ? 5 : 3.5} fill={color} stroke="#121A26" strokeWidth="2" />
+        ))}
+        {hp && (
+          <>
+            <line x1={hp[0]} x2={hp[0]} y1={pad.t} y2={pad.t + ih} stroke="rgba(255,255,255,.28)" strokeWidth="1" strokeDasharray="3 3" />
+            {!showMarkers && <circle cx={hp[0]} cy={hp[1]} r={5} fill={color} stroke="#121A26" strokeWidth="2" />}
+          </>
+        )}
+      </svg>
+      {hp && (
+        <div className="trend-tip" style={{ left: Math.min(Math.max(hp[0] - tipW / 2, 0), w - tipW), top: Math.max(hp[1] - 62, 0), width: tipW }}>
+          <div className="trend-tip-date">{tipDate(series[hover].t)}</div>
+          <div className="trend-tip-val">{tipValue(series[hover].y)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TrendCard({ title, sub, value, delta, children, note }) {
+  return (
+    <div className="trend-card">
+      <div className="trend-card-head">
+        <div>
+          <div className="trend-title">{title}</div>
+          {sub && <div className="trend-sub">{sub}</div>}
+        </div>
+        <div>
+          <div className="trend-value">{value}</div>
+          {delta}
+        </div>
+      </div>
+      {children}
+      {note && <div className="trend-note">{note}</div>}
+    </div>
+  );
+}
+
+/* Trends for the Financials tab. Revenue here is GROSS: tonnage x sale price x exchange rate on
+ * the ship date — before royalty, PPh 22 and PPN. Only finalized barges with a sale price count,
+ * grouped by ship month, with empty months shown as zero so gaps are visible. */
+function FinancialTrends({ hpmHistory, exchangeRateHistory, barges, calculateRevenue }) {
+  const toSeries = (list, key) => {
+    const seen = new Set();
+    return [...list]
+      .filter((h) => h && h.date && Number(h[key]) > 0)
+      .sort((a, b) => isoToUtcMs(b.date) - isoToUtcMs(a.date)) // newest first, so the newest entry wins a same-day tie
+      .filter((h) => { const k = String(h.date).slice(0, 10); if (seen.has(k)) return false; seen.add(k); return true; })
+      .map((h) => ({ t: isoToUtcMs(h.date), y: Number(h[key]) }))
+      .filter((p) => !isNaN(p.t))
+      .sort((a, b) => a.t - b.t);
+  };
+  const hpm = useMemo(() => toSeries(hpmHistory, "price"), [hpmHistory]);
+  const fx = useMemo(() => toSeries(exchangeRateHistory, "rate"), [exchangeRateHistory]);
+
+  const { monthly, cumulative, pricedCount, unpricedFinal } = useMemo(() => {
+    const byMonth = {};
+    let priced = 0, unpriced = 0;
+    barges.forEach((b) => {
+      if (!b.finalized) return;
+      if (!(b.salePrice > 0)) { unpriced++; return; }
+      const t = isoToUtcMs(b.shipDate);
+      if (isNaN(t)) return;
+      const d = new Date(t);
+      const k = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+      byMonth[k] = (byMonth[k] || 0) + calculateRevenue(b);
+      priced++;
+    });
+    const keys = Object.keys(byMonth).map(Number).sort((a, b) => a - b);
+    const m = [];
+    if (keys.length) {
+      const first = new Date(keys[0]), last = new Date(keys[keys.length - 1]);
+      for (let y = first.getUTCFullYear(), mo = first.getUTCMonth(); ; ) {
+        const k = Date.UTC(y, mo, 1);
+        m.push({ t: k, y: byMonth[k] || 0 });
+        if (y === last.getUTCFullYear() && mo === last.getUTCMonth()) break;
+        mo++; if (mo > 11) { mo = 0; y++; }
+      }
+    }
+    let run = 0;
+    const c = m.map((p) => ({ t: p.t, y: (run += p.y) }));
+    return { monthly: m, cumulative: c, pricedCount: priced, unpricedFinal: unpriced };
+  }, [barges, calculateRevenue]);
+
+  const d = (t) => new Date(t);
+  const dayTick = (t) => `${d(t).getUTCDate()} ${MONTHS_SHORT[d(t).getUTCMonth()]}`;
+  const dayTip = (t) => `${d(t).getUTCDate()} ${MONTHS_SHORT[d(t).getUTCMonth()]} ${d(t).getUTCFullYear()}`;
+  const monTick = (t) => `${MONTHS_SHORT[d(t).getUTCMonth()]} ${String(d(t).getUTCFullYear()).slice(2)}`;
+  const monTip = (t) => `${MONTHS_LONG[d(t).getUTCMonth()]} ${d(t).getUTCFullYear()}`;
+  const idrFull = (v) => `Rp ${Math.round(v).toLocaleString("id-ID")}`;
+
+  const deltaEl = (s) => {
+    if (s.length < 2) return <div className="trend-delta">No earlier value yet</div>;
+    const a = s[s.length - 2].y, b = s[s.length - 1].y;
+    if (!a) return <div className="trend-delta">Previous value was 0</div>; // a % change from 0 is meaningless
+    const pct = ((b - a) / a) * 100;
+    return <div className={`trend-delta ${pct > 0 ? "up" : pct < 0 ? "down" : ""}`}>{pct > 0 ? "▲" : pct < 0 ? "▼" : "■"} {Math.abs(pct).toFixed(2)}% vs previous</div>;
+  };
+  const last = (s) => (s.length ? s[s.length - 1] : null);
+  const unpricedNote = unpricedFinal > 0 ? ` ${unpricedFinal} finalized barge${unpricedFinal > 1 ? "s have" : " has"} no sale price yet and ${unpricedFinal > 1 ? "are" : "is"} not counted.` : "";
+
+  return (
+    <div className="trend-grid">
+      <TrendCard title="HPM" sub="USD per WMT" value={last(hpm) ? `$${last(hpm).y.toFixed(2)}` : "—"} delta={deltaEl(hpm)}>
+        <TrendChart label="HPM history" series={hpm} color="#E35F0C" yTick={(v) => `$${v.toFixed(v < 100 ? 1 : 0)}`} tipValue={(v) => `$${v.toFixed(2)} / WMT`}
+          xTick={dayTick} tipDate={dayTip} emptyText="No HPM history yet. Use Update HPM above." />
+      </TrendCard>
+      <TrendCard title="Exchange rate" sub="IDR per USD" value={last(fx) ? last(fx).y.toLocaleString("id-ID") : "—"} delta={deltaEl(fx)}>
+        <TrendChart label="USD to IDR exchange rate" series={fx} color="#22D3B8" yTick={(v) => v.toLocaleString("id-ID")} tipValue={(v) => `Rp ${v.toLocaleString("id-ID")}`}
+          xTick={dayTick} tipDate={dayTip} emptyText="No exchange rate history yet." />
+      </TrendCard>
+      <TrendCard title="Monthly revenue (gross)" sub={last(monthly) ? `Latest: ${monTip(last(monthly).t)}` : "By ship month"}
+        value={last(monthly) ? fmtIdrShort(last(monthly).y, 2) : "—"} delta={monthly.length ? deltaEl(monthly) : null}
+        note={`Gross = tonnage × sale price × exchange rate on the ship date, before royalty, PPh 22 and PPN. ${pricedCount} finalized barge${pricedCount === 1 ? "" : "s"} counted.${unpricedNote}`}>
+        <TrendChart label="Monthly gross revenue" series={monthly} color="#4ADE80" zeroBased yTick={(v) => fmtIdrShort(v)} tipValue={idrFull}
+          xTick={monTick} tipDate={monTip} emptyText="No revenue yet. Enter a sale price on a finalized barge in the Barging Plan tab." />
+      </TrendCard>
+      <TrendCard title="Cumulative revenue (gross)" sub="Running total, year to date" value={last(cumulative) ? fmtIdrShort(last(cumulative).y, 2) : "—"}
+        delta={last(cumulative) ? <div className="trend-delta">{idrFull(last(cumulative).y)}</div> : null}>
+        <TrendChart label="Cumulative gross revenue" series={cumulative} color="#4ADE80" zeroBased yTick={(v) => fmtIdrShort(v)} tipValue={idrFull}
+          xTick={monTick} tipDate={monTip} emptyText="No revenue yet. Enter a sale price on a finalized barge in the Barging Plan tab." />
+      </TrendCard>
+    </div>
+  );
+}
+
+/* ============================================================
  * FinancialsTab — admin-only royalty/PNBP calculator.
  * Royalty (IDR) = HMA price (USD/WMT) x Exchange Rate (IDR/USD) x Barge Qty (WMT) x 15% tariff.
  * Each barge uses the HMA/rate that was in effect on ITS OWN shipDate, not today's —
@@ -3348,8 +3628,7 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
 
   return (
     <div className="stack">
-      <section className="glass panel">
-        <div className="panel-head"><DollarSign size={16} /><span>Royalty &amp; PNBP Calculator</span></div>
+      <CollapsibleSection storageKey="calculator" icon={<DollarSign size={16} />} title="Royalty & PNBP Calculator">
         <p className="note" style={{ marginBottom: 16 }}>Royalty = HPM x Exchange Rate x Qty x 15% tariff. HPM is entered manually per period — not calculated from a formula.</p>
 
         <div className="financial-cards-row">
@@ -3385,15 +3664,14 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
             <div className="card-actions"><button onClick={updateRate} className="btn-card-action">Update Rate</button></div>
           </div>
         </div>
-      </section>
+      </CollapsibleSection>
 
-      <section className="glass panel">
-        <div className="panel-head" style={{ justifyContent: "space-between" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><DollarSign size={16} /> Royalty by Barge</span>
-          <button onClick={exportFinancialData} className="btn-export" title="Export financial data">
-            <FileUp size={14} /> Export Data
-          </button>
-        </div>
+      <CollapsibleSection storageKey="trends" icon={<TrendingUp size={16} />} title="Trends" subtitle="HPM, exchange rate and gross revenue over time">
+        <FinancialTrends hpmHistory={hpmHistory} exchangeRateHistory={exchangeRateHistory} barges={barges} calculateRevenue={calculateRevenue} />
+      </CollapsibleSection>
+
+      <CollapsibleSection storageKey="royalty" icon={<DollarSign size={16} />} title="Royalty by Barge"
+        actions={<button onClick={exportFinancialData} className="btn-export" title="Export financial data"><FileUp size={14} /> Export Data</button>}>
         <p className="note" style={{ marginTop: 0, marginBottom: 12 }}>
           Each barge uses the HPM and exchange rate that were in effect on its own ship date, not today's — that's
           the whole point of keeping history instead of a single current figure.
@@ -3423,10 +3701,9 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
           <strong>Total Royalty (All Barges):</strong>
           <span className="total">{totalRoyalty.toLocaleString("id-ID", { maximumFractionDigits: 0 })} IDR</span>
         </div>
-      </section>
+      </CollapsibleSection>
 
-      <section className="glass panel">
-        <div className="panel-head"><DollarSign size={16} /><span>Estimated Revenue by Barge</span></div>
+      <CollapsibleSection storageKey="revenue" icon={<DollarSign size={16} />} title="Estimated Revenue by Barge">
         <p className="note" style={{ marginTop: 0, marginBottom: 12 }}>
           Estimated revenue = tonnage × sale price (USD/WMT) × exchange rate on the ship date. Shown before PPh 22 and PPN.
           Enter each barge's price in the Barging Plan tab.
@@ -3459,7 +3736,7 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
           <strong>Total estimated revenue ({barges.filter((b) => b.salePrice > 0).length} of {barges.length} barges priced):</strong>
           <span className="total">{barges.reduce((s, b) => s + (calculateRevenue ? calculateRevenue(b) : 0), 0).toLocaleString("id-ID", { maximumFractionDigits: 0 })} IDR</span>
         </div>
-      </section>
+      </CollapsibleSection>
     </div>
   );
 }
@@ -5096,6 +5373,8 @@ function IntegraDashboardInner() {
     } catch (error) {
       console.error(`Error writing ${sheetName} to Sheets:`, error);
       setLastSyncError(`${sheetName} write: ${error.message}`);
+      // A failed save used to be silent; say so, so nobody assumes an edit reached the Sheet
+      showToast(`Couldn't save ${sheetName} to Google Sheets: ${error.message}. Your change is still on screen; it will be retried on your next edit.`, "error", 9000);
       return false;
     }
   };
@@ -5125,6 +5404,35 @@ function IntegraDashboardInner() {
     );
     return writeToSheets("Barges", rows);
   };
+
+  // ---- Every barge edit made in the Barging Plan reaches Google Sheets ----
+  // Edits there (add/generate/delete barge, dome tonnage, ship date, names, sale price) used
+  // to change only this browser's view. They now mark the barges "dirty", and the full list
+  // is written ~1s after the last change (debounced, so typing a name doesn't fire a write per
+  // keystroke). Background syncs and the grade resync use the plain setBarges, so they never
+  // trigger a write: that keeps the old multi-browser last-write-wins problem away.
+  const bargesDirtyRef = useRef(false);
+  const setBargesFromUser = useCallback((updater) => { bargesDirtyRef.current = true; setBarges(updater); }, []);
+  const latestBargesRef = useRef(barges);
+  latestBargesRef.current = barges;
+  const flushBarges = () => {
+    if (!bargesDirtyRef.current) return;
+    bargesDirtyRef.current = false;
+    writeBargesToSheets(latestBargesRef.current);
+  };
+  useEffect(() => {
+    if (!bargesDirtyRef.current) return;
+    const t = setTimeout(flushBarges, 1000);
+    return () => clearTimeout(t);
+  }, [barges]);
+  useEffect(() => {
+    // Save immediately when the tab is hidden or closed, instead of waiting for the timer
+    const onHide = () => { if (document.visibilityState === "hidden") flushBarges(); };
+    const onBeforeUnload = (e) => { if (bargesDirtyRef.current) { flushBarges(); e.preventDefault(); e.returnValue = ""; } };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => { document.removeEventListener("visibilitychange", onHide); window.removeEventListener("beforeunload", onBeforeUnload); };
+  }, []);
   const writeHpmToSheets = (hpmOverride) => {
     const list = hpmOverride || hpmHistory;
     const rows = toRows(["Date", "Price (USD/WMT)"], [...list].sort((a, b) => new Date(b.date) - new Date(a.date)).map((h) => [h.date, h.price.toFixed(2)]));
@@ -5898,7 +6206,7 @@ function IntegraDashboardInner() {
       <main key={tab} className="content tab-enter">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && userFeatures.stock && <StockTab domes={domes} barges={barges} settings={settings} />}
-        {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} calculateRevenue={calculateRevenue} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
+        {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBargesFromUser} toggleFinalize={toggleFinalize} calculateRevenue={calculateRevenue} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
         {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} isFeatureEnabled={isFeatureEnabled} dismissedLoadingBarges={dismissedLoadingBarges} dismissLoadingBarge={dismissLoadingBarge} />}
         {tab === "financials" && isAdmin && userFeatures.financials && (
           <FinancialsTab
@@ -7420,6 +7728,52 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .revenue-row .cell-muted { color: #667080; font-family: 'Inter', sans-serif; font-style: italic; }
 .info-hint { font-size: 11px; color: #8A97A8; margin-top: 4px; font-family: 'Inter', sans-serif; line-height: 1.35; }
 @media (max-width: 900px) { .revenue-table { overflow-x: auto; } .revenue-header, .revenue-row { min-width: 820px; } }
+
+/* ============================ COLLAPSIBLE PANELS ============================ */
+.cs-head { display: flex; align-items: center; gap: 10px; }
+.app .cs-toggle { flex: 1; min-width: 0; width: 100%; background: none; border: 0; padding: 0; margin: 0; color: inherit; text-align: left; cursor: pointer;
+  display: flex; align-items: center; gap: 8px; }
+.cs .cs-toggle.panel-head { margin-bottom: 0; }
+.cs-title { white-space: nowrap; }
+.cs-sub { font-size: 12px; font-weight: 500; color: #667080; margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cs-chevron { margin-left: auto; flex-shrink: 0; color: #8A97A8; transition: transform 280ms cubic-bezier(.4, 0, .2, 1), color 160ms ease; }
+.cs-open .cs-chevron { transform: rotate(180deg); }
+.cs-toggle:hover .cs-chevron { color: #EAF0F6; }
+.cs-actions { flex-shrink: 0; }
+.cs-body { display: grid; grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows 320ms cubic-bezier(.4, 0, .2, 1), opacity 260ms ease; }
+.cs-closed .cs-body { grid-template-rows: 0fr; opacity: 0; }
+.cs-inner { min-height: 0; overflow: hidden; }
+.cs-pad { padding-top: 14px; }
+@media (prefers-reduced-motion: reduce) { .cs-body, .cs-chevron { transition: none; } }
+
+/* ============================ TREND CHARTS ============================ */
+.trend-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.trend-card { background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.08); border-radius: 14px; padding: 14px 14px 10px; min-width: 0; }
+.trend-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+.trend-title { font-size: 11.5px; font-weight: 700; color: #B7C0CC; text-transform: uppercase; letter-spacing: .04em; }
+.trend-sub { font-size: 11px; color: #667080; margin-top: 3px; }
+.trend-value { font-family: 'JetBrains Mono', monospace; font-size: 19px; font-weight: 700; color: #EAF0F6; text-align: right; white-space: nowrap; }
+.trend-delta { font-size: 11px; color: #8A97A8; text-align: right; margin-top: 2px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.trend-delta.up { color: #4ADE80; }
+.trend-delta.down { color: #F87171; }
+.trend-chart { position: relative; width: 100%; touch-action: pan-y; }
+.trend-chart svg { display: block; max-width: 100%; height: auto; outline: none; cursor: crosshair; border-radius: 8px; }
+.trend-chart svg:focus-visible { box-shadow: 0 0 0 2px rgba(227,95,12,.5); }
+.trend-axis { fill: #8A97A8; font-size: 10.5px; font-family: 'Inter', sans-serif; font-variant-numeric: tabular-nums; }
+.trend-tip { position: absolute; pointer-events: none; box-sizing: border-box; background: #121A26; border: 1px solid rgba(255,255,255,.16); border-radius: 10px;
+  padding: 7px 10px; box-shadow: 0 10px 24px rgba(0,0,0,.45); z-index: 2; animation: trendTipIn 120ms ease; }
+@keyframes trendTipIn { from { opacity: 0; } to { opacity: 1; } }
+.trend-tip-date { font-size: 10.5px; color: #8A97A8; }
+.trend-tip-val { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 700; color: #EAF0F6; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trend-empty { height: 150px; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0 20px; color: #667080; font-size: 12.5px;
+  border: 1px dashed rgba(255,255,255,.1); border-radius: 10px; }
+.trend-note { font-size: 11px; color: #667080; margin-top: 8px; line-height: 1.45; }
+@media (max-width: 900px) { .trend-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .cs-sub { display: none; }
+  .cs-head { flex-wrap: wrap; }
+  .trend-value { font-size: 17px; }
+}
 
 /* ============================ CONSISTENCY PASS ============================ */
 /* One font for every form field: Inter with tabular figures. Fields previously mixed
