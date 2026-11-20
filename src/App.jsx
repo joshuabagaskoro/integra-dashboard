@@ -2897,7 +2897,7 @@ function StockTab({ domes, barges = [], settings }) {
 
 /* ----------------------------- Barging Plan tab ----------------------------- */
 
-function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize, onImport, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
+function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize, onImport, onExportBarge, calculateRevenue, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
   const { showToast } = useUIFeedback();
   const [open, setOpen] = useState(false);
   const [addDome, setAddDome] = useState("");
@@ -2932,6 +2932,22 @@ function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize,
   const setShipDate = (v) => onUpdate(barge.no, null, { shipDate: v });
   const setBargeName = (v) => onUpdate(barge.no, null, { bargeName: v });
   const setTugboatName = (v) => onUpdate(barge.no, null, { tugboatName: v });
+
+  // Sale price is typed as text and saved on blur/Enter, so half-typed numbers never land in
+  // state or Sheets. It saves explicitly (like the import path), since a background sync must
+  // not overwrite it.
+  const savedPriceText = barge.salePrice > 0 ? String(barge.salePrice) : "";
+  const [priceText, setPriceText] = useState(savedPriceText);
+  useEffect(() => { setPriceText(barge.salePrice > 0 ? String(barge.salePrice) : ""); }, [barge.salePrice]);
+  const commitPrice = () => {
+    const trimmed = priceText.trim();
+    const next = trimmed === "" ? undefined : Number(trimmed);
+    if (next !== undefined && !(isFinite(next) && next >= 0)) { setPriceText(savedPriceText); return; }
+    if ((barge.salePrice || undefined) === next) return;
+    const updated = onUpdate(barge.no, null, { salePrice: next });
+    onDataCommitted?.(updated);
+  };
+  const estRevenue = calculateRevenue ? calculateRevenue(barge) : 0;
 
   const handleFileImport = (e) => {
     const file = e.target.files[0];
@@ -3036,14 +3052,6 @@ function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize,
           onClick={(e) => { e.stopPropagation(); onExportBarge(barge); }}>
           <FileDown size={13} /> Export
         </button>
-        {barge.finalized && (
-          <button className="btn-invoice-mini" title="Generate Invoice"
-            onClick={(e) => { e.stopPropagation(); onOpenInvoice(barge); }}>
-            <FileText size={13} /> Invoice
-          </button>
-        )}
-        {/* Keeps totals/Ni/status lined up with finalized rows, which carry an extra Invoice button */}
-        {!barge.finalized && <span className="barge-action-spacer" aria-hidden="true" />}
       </div>
 
       {open && (
@@ -3058,6 +3066,17 @@ function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize,
               <label>TB (Tugboat Name)</label>
               <input type="text" className="info-input" placeholder="e.g., TB-POWER-01" value={barge.tugboatName || ""} disabled={barge.finalized}
                 onChange={(e) => setTugboatName(e.target.value)} />
+            </div>
+            <div className="info-field">
+              <label>Sale price (USD/WMT)</label>
+              <input type="number" step="0.01" min="0" className="info-input" placeholder="e.g., 30.10" value={priceText}
+                onChange={(e) => setPriceText(e.target.value)} onBlur={commitPrice}
+                onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+              <div className="info-hint">
+                {barge.salePrice > 0 && barge.totalWMT > 0
+                  ? `Est. revenue ${Math.round(estRevenue).toLocaleString("id-ID")} IDR (before PPh 22 & PPN)`
+                  : "Enter the price to estimate revenue"}
+              </div>
             </div>
           </div>
 
@@ -3130,11 +3149,6 @@ function BargeRow({ barge, isNew = false, domesById, pool, onUpdate, onFinalize,
             <button className="btn-export" onClick={() => onExportBarge(barge)}>
               <FileDown size={13} /> Export
             </button>
-            {barge.finalized && (
-              <button className="btn-invoice" onClick={() => onOpenInvoice(barge)}>
-                <FileText size={13} /> Generate Invoice
-              </button>
-            )}
           </div>
         </div>
       )}
@@ -3304,7 +3318,7 @@ function TimelineTab({ barges, settings, isDevAccount, isFeatureEnabled, dismiss
  * rules are needed later; flat-rate is intentionally the simple first pass.
  * ============================================================ */
 function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory, setExchangeRateHistory,
-  getHpmOnDate, getExchangeRateOnDate, calculateRoyalty, getHpmTrendPercent, getExRateTrendPercent, exportFinancialData,
+  getHpmOnDate, getExchangeRateOnDate, calculateRoyalty, calculateRevenue, getHpmTrendPercent, getExRateTrendPercent, exportFinancialData,
   onHpmUpdated, onExchangeRateUpdated }) {
   const { showPrompt } = useUIFeedback();
 
@@ -3408,6 +3422,42 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
         <div className="royalty-summary">
           <strong>Total Royalty (All Barges):</strong>
           <span className="total">{totalRoyalty.toLocaleString("id-ID", { maximumFractionDigits: 0 })} IDR</span>
+        </div>
+      </section>
+
+      <section className="glass panel">
+        <div className="panel-head"><DollarSign size={16} /><span>Estimated Revenue by Barge</span></div>
+        <p className="note" style={{ marginTop: 0, marginBottom: 12 }}>
+          Estimated revenue = tonnage × sale price (USD/WMT) × exchange rate on the ship date. Shown before PPh 22 and PPN.
+          Enter each barge's price in the Barging Plan tab.
+        </p>
+        <div className="revenue-table">
+          <div className="revenue-header">
+            <div>Barge No.</div><div>Date</div><div>Qty (WMT)</div><div>Price ($/WMT)</div><div>ExRate (IDR)</div><div>Est. revenue (IDR)</div><div>Royalty (IDR)</div><div>After royalty (IDR)</div>
+          </div>
+          {sortedBarges.length === 0 && <div className="log-empty">No barges yet.</div>}
+          {sortedBarges.map((barge) => {
+            const priced = barge.salePrice > 0;
+            const revenue = calculateRevenue ? calculateRevenue(barge) : 0;
+            const royalty = calculateRoyalty(barge.shipDate, barge.totalWMT || 0);
+            const fmtIDR = (n) => n.toLocaleString("id-ID", { maximumFractionDigits: 0 });
+            return (
+              <div key={barge.no} className="revenue-row">
+                <div className="cell">#{barge.no}</div>
+                <div className="cell">{barge.shipDate || "—"}</div>
+                <div className="cell">{fmt(barge.totalWMT)}</div>
+                <div className="cell">{priced ? `$${fmt(barge.salePrice, 2)}` : <span className="cell-muted">Not set</span>}</div>
+                <div className="cell">{fmt(getExchangeRateOnDate(barge.shipDate))}</div>
+                <div className="cell highlight-green">{priced ? fmtIDR(revenue) : "—"}</div>
+                <div className="cell">{fmtIDR(royalty)}</div>
+                <div className="cell">{priced ? fmtIDR(revenue - royalty) : "—"}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="royalty-summary">
+          <strong>Total estimated revenue ({barges.filter((b) => b.salePrice > 0).length} of {barges.length} barges priced):</strong>
+          <span className="total">{barges.reduce((s, b) => s + (calculateRevenue ? calculateRevenue(b) : 0), 0).toLocaleString("id-ID", { maximumFractionDigits: 0 })} IDR</span>
         </div>
       </section>
     </div>
@@ -3888,26 +3938,8 @@ function SettingsTab({ isAdmin, currentUser, handleLogout, exportAllForGoogleShe
 /* ----------------------------- main app ----------------------------- */
 
 
-/* ============================================================
- * Invoice generator — data URIs for letterhead / signature / stamp
- * ============================================================ */
+/* Letterhead image used by the plan report header */
 const INVOICE_LOGO_HEADER = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBAUEBAYFBQUGBgYHCQ4JCQgICRINDQoOFRIWFhUSFBQXGiEcFxgfGRQUHScdHyIjJSUlFhwpLCgkKyEkJST/2wBDAQYGBgkICREJCREkGBQYJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCT/wAARCAF/AfQDASIAAhEBAxEB/8QAHQABAAMAAwEBAQAAAAAAAAAAAAYHCAEEBQMCCf/EAFwQAAEDAwEDBgcIDAkMAQQDAAEAAgMEBREGBxIhCBMxQVGTFRdUVWGR0RQWIjZxdIGyMjVCUnOUsbPBwtLhNDdEZHJ1g5KhIyQlJiczRVNigqLDZRhDY7Sk8PH/xAAbAQEAAgMBAQAAAAAAAAAAAAAABQYBBAcCA//EADYRAQABAQMHCwMEAwEAAAAAAAABAgMEEQUWNFFSkdEGEhMUMlNxgaGxwRUh4TEzQWEkgvDx/9oADAMBAAIRAxEAPwDVCIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiFAREQEREBEQICIiAiIgIiICIiAiIgIiICIiAiIgIidKAiIgIiICIiAiIgIiICIiCP631LNpSyG4w07Kh3Osj3HuLRh2eOR8igB233DpFnpO+d7FJtsXxPPzqL9Ko0lVPLWULxYXjmWVWEYRq/tcchZMu14u3PtaMZxnX/Sy/HhcfM9J3zvYnjwuHmek753sVZ9C5UT9YvneekcEz9DuPd+s8Vl+PC4eZ6TvnexPHjcPM9J3zvYqzRPrF82/SOB9DuPd+s8VmePC4eZ6TvnexPHhcPM9J3zvYqzXKfWb53npHA+h3Hu/WeK2bHtfrrteaGgfaqaNtTM2IvbK4loJxnGFaQWbdHH/AFss3zyL6y0krNkK9Wt4s6qrWrGYlVOUFzsbta0U2NOETHyIiKcQAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiIINti+J5+dRfpVHcFpm+2Ch1HQ+4bjG58G+1+GvLTkdHEKPeKPSg/klR+Mv9qreVckW16t+ks5jDDD7/8Ai05Hy1YXO79FaROOMz9vL+1DYTCvnxSaU8kqPxl/tTxSaU8kqPxl/tUbm7etcb54JXOe6aqt0cVCkIAr58UelPJKj8Zf7U8UelPJKj8Zf7UzdvWuN88DOe6aqt0cVD4RXydkelPI6j8Zf7U8UelPJKj8Zf7VjN29a43zwM57pqq3RxU/o4gass3zyL6y0kopQ7MNNW6tgraelnbNA8SMJneQHDo4ZUrHQrBke4Wl0s6qbTD7z/Ct5byjZX20prsonCIw+4iIpdCiIiB1IiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAiIUBERAREQEREBERAREQEREBERARRTaTe6/T+nPdtumEM/Pxs3i0O4HOeBVWeNTVvnNn4uz2KKvmV7G62nR2kTj+v2/9S9xyLb3yz6WzmMMcPvjwX8ioDxqau85s/F4/YnjU1d5zZ+Ls9i1c47tqndHFuZsXvap3zwX+ioDxqat85s/F2exDtU1aP8AibPxeP2JnHdtU7o4mbF62qd88F/os/8AjV1b5zZ+Ls9i5G1TVvnNv4uz2JnHdtVW6OJmxetqnfPBf6Kk9N7RtTXHUFtpKm4NfBPUsje3mWDLSePEBXYpK43+zvdM1WcT9taLv+T7S5VRRazH3+/2ERFutAREQEREBERAREQAmURAREQEREBERAREQEREBERAREQEREBERAREQEROlAREQEREBERAREQEREBERAREQEREBERAREQQbbF8Tz86i/KVRpV5bYSPeeeI/hUX6VRxx2j1qj8odL8o+V/5M6H5z8PyuQuOHaPWnDtHrUGsJ1rlBjtHrXPDtHrQfnCBcnB6x60GO0etYHs6P+Nlm+eRfWC0ks26PI99lm4j+GRdf/UtJK48mv2a/H4UjlV+9R4fIiIrIqwiIgIiICIiAiIgIiICIiAiIgIiICIiAiIgIiICIiAidKICIiAiIgIiICJ8iICIiAiIgJxREBERA6EREBERAREQEREBERB8aqipq6LmqunhqI8h25KwOGeo4K6fvbsh6bPbvxZnsXpIvFVnRVOMw902ldMYUzMPO97dk8z278WZ7Fx727J5nt34sz2L0kWOhs9mNz101ptTved727J5nt34sz2J727If+D278WZ7F6KJ0NnsxuY6a02p3vN97dk8z278WZ7E97dk8z278WZ7F6SJ0NnsxuOmtNqd7oRaftEEjJYrVQRyMO817YGAtPa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uOOpSbafsst+0q2U8M9S+jrqQudT1TGb27vY3mubwy04HWCCEHV2E3Cmq9llkbDMx7qaJ0EwB4xva92Qezhg/IVH+UdqF3i4bHbaqOanq69lJUvgkDhgNc4sJHa5oBH0KK23ks3VlQW1uq4YqR32YpYH77x9LgPXlWlR7HNKUWiajR8dLKaCpdzssjpMyul4YlB6A4YGMDHDGEFaclSG0OZfZS2Lwu18bWl2OcEG79z143s5x2DPUu9yp71bve/a7OKuJ1w92ic07XZe2MRuG8R1DLgOPSvJk5LN3p68voNWQMgB+BIad7Jmj/tdjPyEKWN5NthGk6u2Prp57xUubIbrMzec1zTkANzwYeIIzk56eAQdPkqjd0bd88f9In80xdvlREeLqmP/AMnD9SRdHQvJ5u2lrmyrn1rVwwslZK6mtzXRCYtOQHkuII6sY6F6ev8AYhete3aoqKnXNWy3vm52C3vpy+Kn4YwBvgZ6eOOtB4fJPI8Bag+eRfmlfHUqR0/yer/pWUvsu0SroGve10rIKUtbLjtHOYPDI4jrV3Y4Y7UGK9a3Jl52tXGS/vcacXfmJ94/7unZLu7voAYPyrYpq7VZ7Q2pE9JS2yCMFsgc1kLIwOGD0Yx0YVXbTeT1Q60u018tNwFsuFRg1DJIy+KZwGN/gQWuwOOMg9mV4umOTE6CeH3zahdXUMLt4UNK17GP9BLjwH9EA+kIKctdXBctrFJWU0gdBPf2yxvxjea6pyD9IIW3VRGsOTM27akmudhvFNa6Wd4k9zupyeYdgZ3N0jhwyBwwrR0FpCp0ZZ30NXf7jfJpJeddPWOyWnAG63JJDeHQSUEmREQEREBERARE6EBERAREQEREBERAREQEREBERAREQEREBERAREQEREBOtEQECIgIiICIiAidKICIiAiIgIiIGUREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBETCAiIgIiICIiAiIgIiICIiAiIgIiICIiAEREBERAREQEREBERAREQEREBERAREQEREBE606kBERAROnqRARE4ICImQgIiICIiAmETKAmERAREQEREBERAROhEBERAREygIiICJlEBETKAiIgIiICJlMoCInQgIiICIiAiIgIiICImUBEymUBETKAiIgIiICIiAiJlAREQETKIP/9k=";
-
-/* Indonesian number-to-words (terbilang), verified against reference invoice */
-const TERBILANG_WORDS = ["", "Satu", "Dua", "Tiga", "Empat", "Lima", "Enam", "Tujuh", "Delapan", "Sembilan", "Sepuluh", "Sebelas"];
-function terbilang(n) {
-  n = Math.floor(Math.abs(n));
-  if (n < 12) return TERBILANG_WORDS[n];
-  if (n < 20) return terbilang(n - 10) + " Belas";
-  if (n < 100) return terbilang(Math.floor(n / 10)) + " Puluh" + (n % 10 !== 0 ? " " + terbilang(n % 10) : "");
-  if (n < 200) return "Seratus" + (n - 100 !== 0 ? " " + terbilang(n - 100) : "");
-  if (n < 1000) return terbilang(Math.floor(n / 100)) + " Ratus" + (n % 100 !== 0 ? " " + terbilang(n % 100) : "");
-  if (n < 2000) return "Seribu" + (n - 1000 !== 0 ? " " + terbilang(n - 1000) : "");
-  if (n < 1000000) return terbilang(Math.floor(n / 1000)) + " Ribu" + (n % 1000 !== 0 ? " " + terbilang(n % 1000) : "");
-  if (n < 1000000000) return terbilang(Math.floor(n / 1000000)) + " Juta" + (n % 1000000 !== 0 ? " " + terbilang(n % 1000000) : "");
-  if (n < 1000000000000) return terbilang(Math.floor(n / 1000000000)) + " Milyar" + (n % 1000000000 !== 0 ? " " + terbilang(n % 1000000000) : "");
-  return terbilang(Math.floor(n / 1000000000000)) + " Triliun" + (n % 1000000000000 !== 0 ? " " + terbilang(n % 1000000000000) : "");
-}
 
 function formatRupiah(n) {
   const rounded = Math.round(n || 0);
@@ -3917,351 +3949,6 @@ function formatUSD(n) {
   return "$" + Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 /* Kurs (exchange rate) must use Indonesian locale (dot thousands separator), not en-US commas */
-function formatKursID(n) {
-  return "Rp " + Math.round(n || 0).toLocaleString("id-ID") + ",-";
-}
-/* Qty in the reference invoice is shown with 2 decimals, Indonesian locale */
-function formatQtyID(n) {
-  return Number(n || 0).toLocaleString("id-ID", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-/* Core invoice calculation, matches the reference template's tax formulas:
- *   DPP Nilai Lain = SubTotal x 11/12
- *   PPN (informational, DIBEBASKAN / exempt per PPN No. 49/2022) = DPP x 12%
- *   PPh 22 = SubTotal x 1.5%
- *   Total = SubTotal - PPh 22   (PPN is NOT added, since it's exempted)
- */
-function computeInvoice(inputs) {
-  const { qty, price, exchangeRate, paymentType, settlementQty, settlementRate } = inputs;
-  const q = Number(qty) || 0;
-  const p = Number(price) || 0;
-  const fx = Number(exchangeRate) || 0;
-
-  const totalHargaDP = q * p * fx; // full contract value at DP-basis qty/rate
-  const dpPaidAmount = totalHargaDP * 0.5;
-
-  let subTotal, totalHargaLine, dpLine;
-  if (paymentType === "settlement") {
-    const sq = Number(settlementQty) || 0;
-    const sfx = Number(settlementRate) || 0;
-    const totalHargaFinal = sq * p * sfx;
-    subTotal = totalHargaFinal - dpPaidAmount;
-    totalHargaLine = totalHargaFinal;
-    dpLine = dpPaidAmount;
-  } else {
-    subTotal = dpPaidAmount;
-    totalHargaLine = totalHargaDP;
-    dpLine = dpPaidAmount;
-  }
-
-  const dpp = subTotal * (11 / 12);
-  const ppn = dpp * 0.12;
-  const pph22 = subTotal * 0.015;
-  const total = subTotal - pph22;
-
-  return { totalHargaLine, dpLine, subTotal, dpp, ppn, pph22, total, dpPaidAmount };
-}
-
-
-/* ============================================================
- * InvoiceModal — form + live preview matching PT Integra Mining
- * Nusantara's invoice template, with print-to-PDF support.
- * ============================================================ */
-function InvoiceModal({ barge, onClose }) {
-  const todayISO = new Date().toISOString().slice(0, 10);
-  const [invoiceNo, setInvoiceNo] = useState("");
-  const [invoiceDate, setInvoiceDate] = useState(todayISO);
-  const [siNo, setSiNo] = useState("");
-  const [kontrakNo, setKontrakNo] = useState("");
-  const [kontrakDate, setKontrakDate] = useState(todayISO);
-  const [clientName, setClientName] = useState("PT ATLAS DELTA MINERALS");
-  const [clientAddress, setClientAddress] = useState("CoHive 101\nJl Mega Kuningan Barat Blok E.4.7 No. 1\nKel. Kuningan Timur, Kec. Setiabudi\nKota Jakarta Selatan, Provinsi DKI Jakarta");
-  const [bargeName, setBargeName] = useState(barge.bargeName || "");
-  const [tugboatName, setTugboatName] = useState(barge.tugboatName || "");
-  const [qty, setQty] = useState(barge.totalWMT || 0);
-  const [price, setPrice] = useState("");
-  const [exchangeRate, setExchangeRate] = useState("");
-  const [paymentType, setPaymentType] = useState("dp"); // 'dp' | 'settlement'
-  const [settlementQty, setSettlementQty] = useState(barge.totalWMT || 0);
-  const [settlementRate, setSettlementRate] = useState("");
-
-  const calc = useMemo(() => computeInvoice({
-    qty, price, exchangeRate, paymentType, settlementQty, settlementRate
-  }), [qty, price, exchangeRate, paymentType, settlementQty, settlementRate]);
-
-  const readyToPreview = Number(price) > 0 && Number(exchangeRate) > 0 &&
-    (paymentType !== "settlement" || Number(settlementRate) > 0);
-
-  const handlePrint = () => printFitToPage("invoice-print-area");
-  const paymentLabel = paymentType === "settlement" ? "Pembayaran Tahap Kedua - Pelunasan" : "Pembayaran Tahap Pertama - 50%";
-  const displayQty = paymentType === "settlement" ? settlementQty : qty;
-  const displayRate = paymentType === "settlement" ? settlementRate : exchangeRate;
-
-  return (
-    <div className="invoice-modal">
-      <div className="invoice-panel glass">
-        <div className="invoice-head no-print">
-          <FileText size={20} style={{ color: "#E35F0C" }} />
-          <span>Generate Invoice — Barge #{barge.no}</span>
-          <button className="invoice-close" onClick={onClose}><X size={18} /></button>
-        </div>
-
-        <div className="invoice-body">
-          <div className="invoice-form no-print">
-            <div className="form-section-title">Client (Kepada)</div>
-            <div className="form-grid">
-              <label>Client Name
-                <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="PT ATLAS DELTA MINERALS" />
-              </label>
-              <label>Client Address (one line each)
-                <textarea rows={4} value={clientAddress} onChange={(e) => setClientAddress(e.target.value)}
-                  placeholder={"CoHive 101\nJl Mega Kuningan Barat Blok E.4.7 No. 1\nKel. Kuningan Timur, Kec. Setiabudi\nKota Jakarta Selatan"} />
-              </label>
-            </div>
-
-            <div className="form-section-title">Invoice details</div>
-            <div className="form-grid">
-              <label>No Invoice
-                <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="014/INV/IMN-ADM/VII/2026" />
-              </label>
-              <label>Tanggal
-                <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} />
-              </label>
-              <label>SI No
-                <input value={siNo} onChange={(e) => setSiNo(e.target.value)} placeholder="09/SI-IMN/VII/2026" />
-              </label>
-              <label>Kontrak No
-                <input value={kontrakNo} onChange={(e) => setKontrakNo(e.target.value)} placeholder="073/PKS/IMN-ADM/VII/2026" />
-              </label>
-              <label>Tanggal Kontrak
-                <input type="date" value={kontrakDate} onChange={(e) => setKontrakDate(e.target.value)} />
-              </label>
-              <label>Barge Name
-                <input value={bargeName} onChange={(e) => setBargeName(e.target.value)} />
-              </label>
-              <label>Tugboat Name
-                <input value={tugboatName} onChange={(e) => setTugboatName(e.target.value)} />
-              </label>
-            </div>
-
-            <div className="form-section-title">Pricing</div>
-            <div className="form-grid">
-              <label>Qty (WMT) — from finalized barge
-                <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} />
-              </label>
-              <label>Nickel Price (USD / WMT)
-                <input type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="e.g. 41" />
-              </label>
-              <label>Exchange Rate (Rp / USD)
-                <input type="number" step="1" value={exchangeRate} onChange={(e) => setExchangeRate(e.target.value)} placeholder="e.g. 18041" />
-              </label>
-            </div>
-
-            <div className="form-section-title">Payment type</div>
-            <div className="radio-row">
-              <label className={`radio-pill ${paymentType === "dp" ? "radio-pill-on" : ""}`}>
-                <input type="radio" name="paymentType" checked={paymentType === "dp"} onChange={() => setPaymentType("dp")} />
-                Down Payment (50%)
-              </label>
-              <label className={`radio-pill ${paymentType === "settlement" ? "radio-pill-on" : ""}`}>
-                <input type="radio" name="paymentType" checked={paymentType === "settlement"} onChange={() => setPaymentType("settlement")} />
-                Settlement (Pelunasan)
-              </label>
-            </div>
-
-            {paymentType === "settlement" && (
-              <>
-                <div className="form-section-title">Settlement adjustment</div>
-                <p className="form-hint">
-                  The 50% down payment already invoiced is recalculated from the Qty / Exchange Rate above.
-                  Adjust the final measured Qty and settlement-date exchange rate below — the remaining
-                  balance (Total Harga at final Qty/Rate minus the DP already paid) becomes this invoice's Sub Total.
-                </p>
-                <div className="form-grid">
-                  <label>Final Qty (WMT)
-                    <input type="number" value={settlementQty} onChange={(e) => setSettlementQty(e.target.value)} />
-                  </label>
-                  <label>Settlement Exchange Rate (Rp / USD)
-                    <input type="number" step="1" value={settlementRate} onChange={(e) => setSettlementRate(e.target.value)} placeholder="e.g. 18100" />
-                  </label>
-                </div>
-                <div className="settlement-note">
-                  DP already invoiced: <strong>{formatRupiah(calc.dpPaidAmount)}</strong> (50% of {formatUSD(price)} × {fmt(qty)} WMT × Rp {fmt(exchangeRate)})
-                </div>
-              </>
-            )}
-          </div>
-
-          <div className="invoice-preview-wrap">
-            {!readyToPreview && (
-              <div className="invoice-placeholder no-print">
-                Enter Nickel Price and Exchange Rate {paymentType === "settlement" ? "(and Settlement Exchange Rate) " : ""}
-                to generate the invoice preview.
-              </div>
-            )}
-            {readyToPreview && (
-              <div id="invoice-print-area" className="invoice-sheet print-area">
-                <div className="inv-header">
-                  <img src={INVOICE_LOGO_HEADER} alt="" className="inv-logo" />
-                </div>
-
-                <table className="inv-top-table">
-                  <colgroup>
-                    <col style={{ width: "237.8pt" }} />
-                    <col style={{ width: "136.5pt" }} />
-                    <col style={{ width: "147.8pt" }} />
-                  </colgroup>
-                  <tbody>
-                    <tr>
-                      <td className="inv-kepada" rowSpan={2}>
-                        <div>Kepada :</div>
-                        <div className="inv-spacer" />
-                        <div className="inv-bold">{clientName || "—"}</div>
-                        {clientAddress.split("\n").filter(Boolean).map((line, i) => (
-                          <div key={i}>{line}</div>
-                        ))}
-                      </td>
-                      <td className="inv-cell-center">
-                        <div className="inv-bold">No Invoice</div>
-                        <div className="inv-spacer" />
-                        <div>{invoiceNo || "—"}</div>
-                      </td>
-                      <td className="inv-cell-center">
-                        <div className="inv-bold">Tanggal</div>
-                        <div className="inv-spacer" />
-                        <div>{fmtDateID(invoiceDate)}</div>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td className="inv-cell-center">
-                        <div className="inv-bold">SI No:</div>
-                        <div>{siNo || "—"}</div>
-                        <div className="inv-spacer" />
-                        <div>{tugboatName || "—"}</div>
-                        <div>{bargeName || "—"}</div>
-                      </td>
-                      <td className="inv-cell-center">
-                        <div className="inv-bold">Kontrak</div>
-                        <div className="inv-spacer" />
-                        <div>{kontrakNo || "—"}</div>
-                        <div>{fmtDateID(kontrakDate)}</div>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-
-                <table className="inv-items-table">
-                  <colgroup>
-                    <col style={{ width: "54pt" }} />
-                    <col style={{ width: "132pt" }} />
-                    <col style={{ width: "63pt" }} />
-                    <col style={{ width: "56.2pt" }} />
-                    <col style={{ width: "74.2pt" }} />
-                    <col style={{ width: "142.5pt" }} />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th>Kode</th>
-                      <th>Keterangan</th>
-                      <th>Qty</th>
-                      <th>Harga</th>
-                      <th>Kurs</th>
-                      <th>Total Harga</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td></td>
-                      <td className="inv-left">
-                        Nickel Ore Indonesia<br />
-                        <div className="inv-spacer" />
-                        {paymentLabel}
-                      </td>
-                      <td className="inv-center">{formatQtyID(displayQty)}</td>
-                      <td className="inv-right">$ {Number(price || 0).toLocaleString("en-US")}</td>
-                      <td className="inv-right">{formatKursID(displayRate)}</td>
-                      <td className="inv-right">
-                        {formatRupiah(calc.totalHargaLine)}<br />
-                        <div className="inv-spacer" />
-                        {formatRupiah(paymentType === "settlement" ? calc.subTotal : calc.dpLine)}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td colSpan={3} className="inv-bank-cell" rowSpan={5}>
-                        Harap Pembayaran Melalui Rekening Sebagai Berikut :<br />
-                        NAMA : PT Integra Mining Nusantara<br />
-                        BANK : Mandiri<br />
-                        CABANG : KCP Jakarta Gedung Patra Jasa<br />
-                        NO REKENING : 126-00-5886887-7
-                      </td>
-                      <td colSpan={2} className="inv-left">Sub Total</td>
-                      <td className="inv-right">{formatRupiah(calc.subTotal)}</td>
-                    </tr>
-                    <tr>
-                      <td colSpan={2} className="inv-left">DPP Nilai Lainnya</td>
-                      <td className="inv-right">{formatRupiah(calc.dpp)}</td>
-                    </tr>
-                    <tr>
-                      <td colSpan={2} className="inv-left">PPN DIBEBASKAN -<br />PP Nomor 49 Tahun 2022</td>
-                      <td className="inv-right">{formatRupiah(calc.ppn)}</td>
-                    </tr>
-                    <tr>
-                      <td colSpan={2} className="inv-left">PPh 22 - 1.5%</td>
-                      <td className="inv-right">{formatRupiah(calc.pph22)}</td>
-                    </tr>
-                    <tr>
-                      <td colSpan={2} className="inv-left inv-bold">Total</td>
-                      <td className="inv-right inv-bold">{formatRupiah(calc.total)}</td>
-                    </tr>
-                    <tr>
-                      <td colSpan={6} className="inv-terbilang">
-                        <div className="inv-bold">Terbilang :</div>
-                        # {terbilang(Math.round(calc.total))} Rupiah
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-
-                <table className="inv-sig-table">
-                  <tbody>
-                    <tr>
-                      <td className="inv-sig-box">
-                        <div className="inv-bold">PT INTEGRA MINING NUSANTARA</div>
-                        <div className="inv-sig-gap" />
-                        <div className="inv-bold inv-underline">HARIS FAUZAN SALEH</div>
-                        <div className="inv-bold">DIREKTUR UTAMA</div>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-
-                <div className="inv-footer">
-                  <div className="inv-bold">PT INTEGRA MINING NUSANTARA</div>
-                  <div>Patra Jasa Office Lt. 17, Room 1702-1704</div>
-                  <div>Kel. Kuningan Timur, Kec. Setiabudi</div>
-                  <div>Jakarta Selatan, Indonesia</div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {readyToPreview && (
-          <div className="invoice-action-bar no-print">
-            <button className="btn-primary invoice-print-btn" onClick={handlePrint}>
-              <Printer size={14} /> Print / Save as PDF
-            </button>
-            <button className="btn-download-html" onClick={() => downloadPrintAreaAsHTML("invoice-print-area", `Invoice_${invoiceNo || "Barge_" + barge.no}.html`)}>
-              <FileDown size={14} /> Download HTML
-            </button>
-            <div className="invoice-action-hint">If Print doesn't open a dialog (common in embedded previews), use Download HTML, then open that file in your browser and print from there.</div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function fmtDateID(iso) {
   if (!iso) return "—";
   const months = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
@@ -4862,7 +4549,6 @@ function IntegraDashboardInner() {
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [reviewData, setReviewData] = useState(null);
   const [isSubmittingLoadingReport, setIsSubmittingLoadingReport] = useState(false);
-  const [invoiceBarge, setInvoiceBarge] = useState(null); // barge object currently being invoiced, or null
   const [exportBarge, setExportBarge] = useState(null); // barge object currently being exported, or null
   const domesByIdTop = useMemo(() => { const m = {}; domes.forEach((d) => (m[d.id] = d)); return m; }, [domes]);
   const [showImport, setShowImport] = useState(false);
@@ -5079,6 +4765,13 @@ function IntegraDashboardInner() {
     const exRate = getExchangeRateOnDate(bargeDate);
     return hpm * exRate * qty * ROYALTY_TARIFF;
   };
+  // Estimated revenue (IDR) = sale price (USD/WMT) x tonnage x exchange rate on the ship date.
+  // Deliberately before PPh 22 and PPN, as agreed. Returns 0 when no price is entered.
+  const calculateRevenue = (barge) => {
+    const price = Number(barge.salePrice) || 0;
+    if (!(price > 0)) return 0;
+    return price * (barge.totalWMT || 0) * getExchangeRateOnDate(barge.shipDate);
+  };
   const getHpmTrendPercent = () => {
     if (hpmHistory.length < 2) return 0;
     return ((hpmHistory[0].price - hpmHistory[1].price) / hpmHistory[1].price) * 100;
@@ -5272,6 +4965,8 @@ function IntegraDashboardInner() {
       progressPercent: row["Progress %"] !== "" && row["Progress %"] !== undefined ? Math.round(cleanNum(row["Progress %"])) : undefined,
       balanceDue: row["Balance Due"] !== "" && row["Balance Due"] !== undefined ? cleanNum(row["Balance Due"]) : undefined,
       lastUpdated: row["Last Updated"] || undefined,
+      // Estimated sale price, USD per WMT, entered per barge (before PPh 22 / PPN)
+      salePrice: row["Sale Price (USD/WMT)"] !== "" && row["Sale Price (USD/WMT)"] !== undefined ? cleanNum(row["Sale Price (USD/WMT)"]) : undefined,
     };
   };
 
@@ -5418,13 +5113,14 @@ function IntegraDashboardInner() {
   const writeBargesToSheets = (bargesOverride) => {
     const list = bargesOverride || barges;
     const rows = toRows(
-      ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments", "Qty On Board", "Progress %", "Balance Due", "Last Updated"],
+      ["Barge No", "Ship Date", "Barge Name", "Tugboat Name", "Total WMT", "Grade (Ni %)", "Status", "Finalized", "Sources", "Stock Adjustments", "Qty On Board", "Progress %", "Balance Due", "Last Updated", "Sale Price (USD/WMT)"],
       list.map((b) => [
         String(b.no).padStart(2, "0"), b.shipDate, b.bargeName || "", b.tugboatName || "",
         fmt(b.totalWMT), fmt(b.grade, 2), b.status, b.finalized ? "Yes" : "No",
         (b.sources || []).map((s) => `${s.id}:${s.amt}WMT`).join("; "),
         b.stockAdjustments && Object.keys(b.stockAdjustments).length ? JSON.stringify(b.stockAdjustments) : "",
         b.qtyOnBoard || "", b.progressPercent || "", b.balanceDue || "", b.lastUpdated || "",
+        b.salePrice > 0 ? Number(b.salePrice).toFixed(2) : "",
       ])
     );
     return writeToSheets("Barges", rows);
@@ -6158,10 +5854,6 @@ function IntegraDashboardInner() {
         </div>
       )}
 
-      {invoiceBarge && (
-        <InvoiceModal barge={invoiceBarge} onClose={() => setInvoiceBarge(null)} />
-      )}
-
       {exportBarge && (
         <BargeExportModal barge={exportBarge} domesById={domesByIdTop} onClose={() => setExportBarge(null)} />
       )}
@@ -6206,14 +5898,14 @@ function IntegraDashboardInner() {
       <main key={tab} className="content tab-enter">
         {tab === "overview" && <OverviewTab domes={domes} barges={barges} settings={settings} />}
         {tab === "stock" && userFeatures.stock && <StockTab domes={domes} barges={barges} settings={settings} />}
-        {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} onOpenInvoice={setInvoiceBarge} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
+        {tab === "plan" && userFeatures.barging && <PlanTabWired domes={domes} settings={settings} barges={barges} setBarges={setBarges} toggleFinalize={toggleFinalize} calculateRevenue={calculateRevenue} onExportBarge={setExportBarge} onCheckStatus={setStatusBarge} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />}
         {tab === "timeline" && userFeatures.timeline && <TimelineTab domes={domes} settings={settings} barges={barges} isDevAccount={isDevAccount} isFeatureEnabled={isFeatureEnabled} dismissedLoadingBarges={dismissedLoadingBarges} dismissLoadingBarge={dismissLoadingBarge} />}
         {tab === "financials" && isAdmin && userFeatures.financials && (
           <FinancialsTab
             barges={barges} hpmHistory={hpmHistory} setHpmHistory={setHpmHistory}
             exchangeRateHistory={exchangeRateHistory} setExchangeRateHistory={setExchangeRateHistory}
             getHpmOnDate={getHpmOnDate} getExchangeRateOnDate={getExchangeRateOnDate}
-            calculateRoyalty={calculateRoyalty} getHpmTrendPercent={getHpmTrendPercent}
+            calculateRoyalty={calculateRoyalty} calculateRevenue={calculateRevenue} getHpmTrendPercent={getHpmTrendPercent}
             getExRateTrendPercent={getExRateTrendPercent} exportFinancialData={exportFinancialData}
             onHpmUpdated={writeHpmToSheets} onExchangeRateUpdated={writeExchangeRateToSheets}
           />
@@ -6235,7 +5927,7 @@ function IntegraDashboardInner() {
 }
 
 /* PlanTabWired: thin wrapper so finalize can reach the top-level setDomes */
-function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOpenInvoice, onExportBarge, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
+function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onExportBarge, calculateRevenue, onCheckStatus, onDataCommitted, isFeatureEnabled }) {
   const [filter, setFilter] = useState("all");
   const [genCount, setGenCount] = useState(5);
   const [genContractors, setGenContractors] = useState(null); // null = all
@@ -6469,7 +6161,7 @@ function PlanTabWired({ domes, settings, barges, setBarges, toggleFinalize, onOp
         )}
         {filtered.map((b) => (
           <BargeRow key={b.no} barge={b} isNew={newBargeNos.includes(b.no)} domesById={domesById} pool={pool}
-            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onOpenInvoice={onOpenInvoice} onExportBarge={onExportBarge} onCheckStatus={onCheckStatus} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />
+            onUpdate={onUpdate} onImport={onUpdate} onFinalize={toggleFinalize} onRemove={removeBarge} onExportBarge={onExportBarge} calculateRevenue={calculateRevenue} onCheckStatus={onCheckStatus} onDataCommitted={onDataCommitted} isFeatureEnabled={isFeatureEnabled} />
         ))}
       </section>
 
@@ -6878,14 +6570,6 @@ textarea:focus-visible, [tabindex]:focus-visible {
 .import-barge-label input { display: none; }
 
 .barge-row-actions { margin-top: 12px; display: flex; justify-content: flex-end; gap: 10px; }
-.btn-invoice { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 9px;
-  background: linear-gradient(135deg, #E35F0C, #C94E08); border: none; color: #fff; font-size: 12px; font-weight: 700;
-  cursor: pointer; transition: filter .15s; }
-.btn-invoice:hover { filter: brightness(1.1); }
-.btn-invoice-mini { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 7px;
-  background: rgba(227,95,12,.15); border: 1px solid rgba(227,95,12,.4); color: #E35F0C; font-size: 11px; font-weight: 700;
-  cursor: pointer; margin-left: 8px; flex-shrink: 0; }
-.btn-invoice-mini:hover { background: rgba(227,95,12,.25); }
 .btn-export-mini { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 7px;
   background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); color: #B7C0CC; font-size: 11px; font-weight: 700;
   cursor: pointer; margin-left: 8px; flex-shrink: 0; }
@@ -7501,16 +7185,16 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .mobile-nav-item { transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 
 /* ---------- buttons: one consistent feel (hover, press, disabled) ---------- */
-.btn-import, .btn-ghost, .btn-primary, .btn-invoice, .btn-invoice-mini, .btn-export-mini, .btn-status, .btn-export,
+.btn-import, .btn-ghost, .btn-primary, .btn-export-mini, .btn-status, .btn-export,
 .btn-toggle, .btn-export-pdf, .btn-logout, .btn-download-html, .btn-card-action, .chip, .zoom-btn, .login-button,
 .multiselect-btn, .dome-select-btn, .hamburger-btn, .icon-btn, .import-barge-label {
   transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
     transform .12s var(--ease), box-shadow var(--t-fast) var(--ease), filter var(--t-fast) var(--ease); }
-.btn-import:active, .btn-ghost:active, .btn-primary:active, .btn-invoice:active, .btn-invoice-mini:active, .btn-export-mini:active,
+.btn-import:active, .btn-ghost:active, .btn-primary:active, .btn-export-mini:active,
 .btn-status:active, .btn-export:active, .btn-toggle:active, .btn-export-pdf:active, .btn-logout:active, .btn-download-html:active,
 .btn-card-action:active, .chip:active, .zoom-btn:active:not(:disabled), .login-button:active { transform: scale(.97); }
 .btn-primary:hover { box-shadow: 0 6px 18px rgba(227,95,12,.18); }
-.btn-invoice:hover, .login-button:hover { box-shadow: 0 10px 24px rgba(227,95,12,.32); }
+.login-button:hover { box-shadow: 0 10px 24px rgba(227,95,12,.32); }
 .chip:hover:not(.chip-active) { border-color: rgba(255,255,255,.22); color: var(--text); }
 .app button:disabled, .app .btn-primary:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; }
 .btn-ghost, .btn-primary { font-family: inherit; }
@@ -7724,6 +7408,19 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 
 
 .kpi-sub { font-size: 11px; color: #8A97A8; margin-top: 4px; line-height: 1.35; font-family: 'Inter', sans-serif; font-weight: 500; }
+/* ============================ REVENUE ============================ */
+.revenue-table { background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; overflow: hidden; }
+.revenue-header, .revenue-row { display: grid; grid-template-columns: 64px 96px 84px 100px 100px 160px 150px 160px; gap: 10px; align-items: center; }
+.revenue-header { background: rgba(255,255,255,.06); padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.08);
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #8A97A8; }
+.revenue-row { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; color: #B7C0CC; font-family: 'JetBrains Mono', monospace; }
+.revenue-row:last-child { border-bottom: none; }
+.revenue-row .cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.revenue-row .cell.highlight-green { color: #4ADE80; font-weight: 700; }
+.revenue-row .cell-muted { color: #667080; font-family: 'Inter', sans-serif; font-style: italic; }
+.info-hint { font-size: 11px; color: #8A97A8; margin-top: 4px; font-family: 'Inter', sans-serif; line-height: 1.35; }
+@media (max-width: 900px) { .revenue-table { overflow-x: auto; } .revenue-header, .revenue-row { min-width: 820px; } }
+
 /* ============================ CONSISTENCY PASS ============================ */
 /* One font for every form field: Inter with tabular figures. Fields previously mixed
  * JetBrains Mono (number boxes), Inter (text) and the system font (dropdowns, dates). */
@@ -7736,9 +7433,6 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .app select:disabled { opacity: .5; }
 .app input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.75); cursor: pointer; opacity: .8; }
 
-/* Barge rows line up whether or not the Invoice button is there */
-.app .btn-invoice-mini { box-sizing: border-box; width: 88px; min-width: 88px; justify-content: center; }
-.barge-action-spacer { width: 88px; margin-left: 8px; flex-shrink: 0; }
 
 /* Brief highlight on barges that were just added */
 .barge-row-new { animation: bargeNewPulse 2.2s ease; }
@@ -7837,8 +7531,6 @@ html { -webkit-tap-highlight-color: transparent; }
   .royalty-summary { flex-direction: column; align-items: flex-start; }
   .royalty-summary .total { margin-left: 0; font-size: 18px; }
   .app .barge-row-top > input.date-input { font-size: 13px; padding: 7px 10px; min-height: 36px; }
-  .app .btn-invoice-mini { width: auto; }
-  .barge-action-spacer { display: none; }
   .barge-add-bar { flex-direction: column; }
   .barge-add-bar > * { width: 100%; justify-content: center; }
   .app input[type="checkbox"], .app input[type="radio"] { width: 20px; height: 20px; }
@@ -7882,7 +7574,7 @@ html { -webkit-tap-highlight-color: transparent; }
   .barge-total-wmt { order: 4; margin-left: auto; }
   .barge-avg-ni { order: 5; }
   .barge-avg-simg { order: 6; }
-  .btn-export-mini, .btn-invoice-mini { order: 7; flex: 1 1 calc(50% - 6px); justify-content: center; margin-left: 0; padding: 9px 10px; font-size: 12px; }
+  .btn-export-mini { order: 7; flex: 1 1 100%; justify-content: center; margin-left: 0; padding: 9px 10px; font-size: 12px; }
   .barge-info-row { flex-direction: column; }
   .info-field, .info-input { width: 100%; min-width: 0; }
   .add-dome-row { flex-direction: column; }
