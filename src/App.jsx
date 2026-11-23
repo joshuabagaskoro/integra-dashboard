@@ -3395,17 +3395,18 @@ function TrendChart({ series, projection = null, color, zeroBased = false, yTick
 
   if (!series.length) return <div className="trend-empty">{emptyText}</div>;
 
-  // Optional projection: points {t, y, lo, hi} drawn dashed after the last actual point, with a lo–hi band
-  const proj = projection && projection.length ? projection : [];
+  // Projection: { lines: [{ key, label, color, dash, pts: [{t, y}] }] }, ordered low to high.
+  // Every branch starts from the last actual point, so they fan out from today's total.
+  const lines = projection && projection.lines ? projection.lines.filter((l) => l.pts.length) : [];
   const n = series.length;
-  const all = [...series, ...proj];
+  const projT = lines.length ? lines[0].pts.map((p) => p.t) : [];
+  const ts = [...series.map((p) => p.t), ...projT];
   const pad = { l: 60, r: 14, t: 14, b: 26 };
   const iw = Math.max(10, w - pad.l - pad.r);
   const ih = height - pad.t - pad.b;
-  const ts = all.map((p) => p.t);
   let t0 = Math.min(...ts), t1 = Math.max(...ts);
   if (t0 === t1) { t0 -= 15 * 864e5; t1 += 15 * 864e5; }
-  const ys = [...series.map((p) => p.y), ...proj.flatMap((p) => [p.y, p.lo ?? p.y, p.hi ?? p.y])];
+  const ys = [...series.map((p) => p.y), ...lines.flatMap((l) => l.pts.map((p) => p.y))];
   let ymin = Math.min(...ys), ymax = Math.max(...ys);
   if (zeroBased) ymin = Math.min(0, ymin);
   else { const m = (ymax - ymin) * 0.12 || Math.abs(ymax) * 0.02 || 1; ymin -= m; ymax += m; }
@@ -3414,33 +3415,41 @@ function TrendChart({ series, projection = null, color, zeroBased = false, yTick
   const yLo = ticks[0], yHi = ticks[ticks.length - 1];
   const x = (t) => pad.l + ((t - t0) / (t1 - t0)) * iw;
   const y = (v) => pad.t + (1 - (v - yLo) / (yHi - yLo || 1)) * ih;
-
-  const pts = all.map((p) => [x(p.t), y(p.y)]);
-  const actPts = pts.slice(0, n);
   const P = ([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`;
-  const line = actPts.map((q, i) => `${i ? "L" : "M"}${P(q)}`).join(" ");
-  const area = `${line} L${actPts[n - 1][0].toFixed(1)},${(pad.t + ih).toFixed(1)} L${actPts[0][0].toFixed(1)},${(pad.t + ih).toFixed(1)} Z`;
-  const projLine = proj.length ? `M${P(actPts[n - 1])} ` + pts.slice(n).map((q) => `L${P(q)}`).join(" ") : null;
-  const band = proj.length
-    ? `M${P(actPts[n - 1])} ` + proj.map((p) => `L${P([x(p.t), y(p.hi ?? p.y)])}`).join(" ") + " "
-      + [...proj].reverse().map((p) => `L${P([x(p.t), y(p.lo ?? p.y)])}`).join(" ") + " Z"
+
+  const pts = series.map((p) => [x(p.t), y(p.y)]);
+  const last = pts[n - 1];
+  const line = pts.map((q, i) => `${i ? "L" : "M"}${P(q)}`).join(" ");
+  const area = `${line} L${P([last[0], pad.t + ih])} L${P([pts[0][0], pad.t + ih])} Z`;
+  const branches = lines.map((l) => {
+    const ends = l.pts.map((p) => [x(p.t), y(p.y)]);
+    return { ...l, ends, path: `M${P(last)} ` + ends.map((q) => `L${P(q)}`).join(" ") };
+  });
+  // Shaded range between the lowest and highest branch
+  const bandPath = branches.length >= 2
+    ? `M${P(last)} ` + branches[branches.length - 1].ends.map((q) => `L${P(q)}`).join(" ") + " "
+      + [...branches[0].ends].reverse().map((q) => `L${P(q)}`).join(" ") + " Z"
     : null;
 
-  // x labels sit on real data points, thinned to what fits
-  // Thinned by on-screen distance, so uneven spacing (e.g. a projection months ahead) never overlaps
+  // Every x position drawn: actual points, then the projection end point(s)
+  const items = [
+    ...series.map((p, i) => ({ i, t: p.t, px: pts[i][0] })),
+    ...projT.map((t, j) => ({ i: n + j, t, px: x(t) })),
+  ];
+  // x labels are thinned by on-screen distance, so uneven spacing never overlaps.
+  // The latest point is always labelled.
   const minGap = 66;
   const xLabelIdx = [];
-  pts.forEach(([px], i) => { if (!xLabelIdx.length || px - pts[xLabelIdx[xLabelIdx.length - 1]][0] >= minGap) xLabelIdx.push(i); });
-  // The latest point is always labelled; if it crowds the label before it, drop that one instead
-  const lastIdx = all.length - 1;
-  if (xLabelIdx[xLabelIdx.length - 1] !== lastIdx) {
-    if (xLabelIdx.length > 1 && pts[lastIdx][0] - pts[xLabelIdx[xLabelIdx.length - 1]][0] < minGap) xLabelIdx.pop();
-    xLabelIdx.push(lastIdx);
+  items.forEach((it, k) => { if (!xLabelIdx.length || it.px - items[xLabelIdx[xLabelIdx.length - 1]].px >= minGap) xLabelIdx.push(k); });
+  const lastK = items.length - 1;
+  if (xLabelIdx[xLabelIdx.length - 1] !== lastK) {
+    if (xLabelIdx.length > 1 && items[lastK].px - items[xLabelIdx[xLabelIdx.length - 1]].px < minGap) xLabelIdx.pop();
+    xLabelIdx.push(lastK);
   }
 
   const nearest = (px) => {
     let best = 0, bd = Infinity;
-    pts.forEach(([qx], i) => { const d = Math.abs(qx - px); if (d < bd) { bd = d; best = i; } });
+    items.forEach((it, k) => { const d = Math.abs(it.px - px); if (d < bd) { bd = d; best = k; } });
     return best;
   };
   const onMove = (e) => {
@@ -3448,19 +3457,22 @@ function TrendChart({ series, projection = null, color, zeroBased = false, yTick
     setHover(nearest((e.clientX - r.left) * (w / r.width)));
   };
   const onKey = (e) => {
-    if (e.key === "ArrowRight") { e.preventDefault(); setHover((h) => (h === null ? 0 : Math.min(all.length - 1, h + 1))); }
-    if (e.key === "ArrowLeft") { e.preventDefault(); setHover((h) => (h === null ? all.length - 1 : Math.max(0, h - 1))); }
+    if (e.key === "ArrowRight") { e.preventDefault(); setHover((h) => (h === null ? 0 : Math.min(items.length - 1, h + 1))); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); setHover((h) => (h === null ? items.length - 1 : Math.max(0, h - 1))); }
     if (e.key === "Escape") setHover(null);
   };
-  const hp = hover !== null && hover < all.length ? pts[hover] : null;
-  const hoverProj = hp && hover >= n ? all[hover] : null;
-  const showMarkers = all.length <= 36;
-  const tipW = hoverProj ? 196 : 168;
+
+  const hk = hover !== null && hover < items.length ? hover : null;
+  const isProj = hk !== null && hk >= n;
+  const j = isProj ? hk - n : -1;
+  const hp = hk === null ? null : [items[hk].px, isProj ? Math.min(...branches.map((b) => b.ends[j][1])) : pts[hk][1]];
+  const tipW = isProj ? 262 : 168;
+  const tipH = isProj ? 44 + branches.length * 20 : 62;
 
   return (
     <div className="trend-chart" ref={wrapRef}>
       <svg width={w} height={height} viewBox={`0 0 ${w} ${height}`} role="img" tabIndex={0}
-        aria-label={`${label}: ${series.length} points, latest ${tipValue(series[series.length - 1].y)}${proj.length ? `, projected ${tipValue(proj[proj.length - 1].y)}` : ""}. Use left and right arrow keys to read values.`}
+        aria-label={`${label}: ${series.length} points, latest ${tipValue(series[series.length - 1].y)}${branches.length ? `, projected ${branches.map((b) => `${b.label} ${tipValue(b.pts[0].y)}`).join(", ")}` : ""}. Use left and right arrow keys to read values.`}
         onPointerMove={onMove} onPointerDown={onMove} onPointerLeave={() => setHover(null)} onKeyDown={onKey} onBlur={() => setHover(null)}>
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
@@ -3474,32 +3486,31 @@ function TrendChart({ series, projection = null, color, zeroBased = false, yTick
             <text x={pad.l - 8} y={y(v)} dy="0.35em" textAnchor="end" className="trend-axis">{yTick(v)}</text>
           </g>
         ))}
-        {xLabelIdx.map((i) => (
-          <text key={i} x={pts[i][0]} y={height - 8} textAnchor={all.length === 1 ? "middle" : i === 0 ? "start" : i === all.length - 1 ? "end" : "middle"} className="trend-axis">{xTick(all[i].t)}</text>
+        {xLabelIdx.map((k) => (
+          <text key={k} x={items[k].px} y={height - 8} textAnchor={items.length === 1 ? "middle" : k === 0 ? "start" : k === lastK ? "end" : "middle"} className="trend-axis">{xTick(items[k].t)}</text>
         ))}
         {series.length > 1 && <path d={area} fill={`url(#${gradId})`} />}
-        {series.length > 1 && <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
-        {band && <path d={band} fill={color} fillOpacity="0.12" stroke="none" />}
-        {projLine && <path d={projLine} fill="none" stroke={color} strokeWidth="2" strokeDasharray="5 4" strokeLinecap="round" />}
-        {showMarkers && pts.map(([px, py], i) => (
-          i < n
-            ? <circle key={i} cx={px} cy={py} r={hover === i ? 5 : 3.5} fill={color} stroke="#121A26" strokeWidth="2" />
-            : <circle key={i} cx={px} cy={py} r={hover === i ? 5.5 : 4.5} fill="#121A26" stroke={color} strokeWidth="2" />
+        {bandPath && <path d={bandPath} fill={color} fillOpacity="0.1" stroke="none" />}
+        {branches.map((b) => (
+          <path key={b.key} d={b.path} fill="none" stroke={b.color} strokeWidth="2" strokeDasharray={b.dash} strokeLinecap="round" />
         ))}
-        {hp && (
-          <>
-            <line x1={hp[0]} x2={hp[0]} y1={pad.t} y2={pad.t + ih} stroke="rgba(255,255,255,.28)" strokeWidth="1" strokeDasharray="3 3" />
-            {!showMarkers && <circle cx={hp[0]} cy={hp[1]} r={5} fill={color} stroke="#121A26" strokeWidth="2" />}
-          </>
-        )}
+        {series.length > 1 && <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
+        {pts.map(([px, py], i) => (
+          <circle key={i} cx={px} cy={py} r={hk === i ? 5 : 3.5} fill={color} stroke="#121A26" strokeWidth="2" />
+        ))}
+        {branches.map((b) => b.ends.map(([px, py], j2) => (
+          <circle key={`${b.key}-${j2}`} cx={px} cy={py} r={isProj && hk === n + j2 ? 5.5 : 4.5} fill="#121A26" stroke={b.color} strokeWidth="2" />
+        )))}
+        {hp && <line x1={hp[0]} x2={hp[0]} y1={pad.t} y2={pad.t + ih} stroke="rgba(255,255,255,.28)" strokeWidth="1" strokeDasharray="3 3" />}
       </svg>
       {hp && (
-        <div className="trend-tip" style={{ left: Math.min(Math.max(hp[0] - tipW / 2, 0), w - tipW), top: Math.max(hp[1] - (hoverProj ? 104 : 62), 0), width: tipW }}>
-          <div className="trend-tip-date">{tipDate(all[hover].t)}{hoverProj ? " · projected" : ""}</div>
-          <div className="trend-tip-val">{tipValue(all[hover].y)}</div>
-          {hoverProj && hoverProj.lo != null && (
-            <div className="trend-tip-range">Low {tipValue(hoverProj.lo)}<br />High {tipValue(hoverProj.hi)}</div>
-          )}
+        <div className="trend-tip" style={{ left: Math.min(Math.max(hp[0] - tipW / 2, 0), w - tipW), top: Math.max(hp[1] - tipH, 0), width: tipW }}>
+          <div className="trend-tip-date">{isProj ? `${tipDate(projT[j])} · projected` : tipDate(series[hk].t)}</div>
+          {isProj
+            ? branches.map((b) => (
+              <div key={b.key} className="trend-tip-row"><i style={{ background: b.color }} />{b.label}<b>{tipValue(b.pts[j].y)}</b></div>
+            ))
+            : <div className="trend-tip-val">{tipValue(series[hk].y)}</div>}
         </div>
       )}
     </div>
@@ -3571,16 +3582,24 @@ function FinancialTrends({ hpmHistory, exchangeRateHistory, barges, calculateRev
     return { monthly: m, cumulative: c, pricedCount: priced, unpricedFinal: unpriced };
   }, [barges, calculateRevenue]);
 
-  // Year-end projection on the cumulative chart (same numbers as the Revenue projection table)
+  // Year-end projection on the cumulative chart: three branches from the last actual total, using the
+  // same scenario numbers as the Revenue projection table (pessimistic, realistic, optimistic).
   const cumProjection = useMemo(() => {
     if (!cumulative.length) return null;
     const P = computeRevenueProjection(barges, exchangeRateHistory, calculateRevenue);
     if (!P.ready || !(P.newWmt > 0)) return null;
     const lastPt = cumulative[cumulative.length - 1];
-    let t = Date.UTC(P.thisYear, 11, 1);
-    if (lastPt.t >= t) t = Date.UTC(P.thisYear, 11, 31);
+    const t = Date.UTC(P.thisYear, 11, 31);
     if (lastPt.t >= t) return null;
-    return { points: [{ t, y: lastPt.y + P.base.rev, lo: lastPt.y + P.low.rev, hi: lastPt.y + P.high.rev }], P };
+    const at = (sc) => [{ t, y: lastPt.y + sc.rev }];
+    return {
+      P,
+      lines: [
+        { key: "pess", label: `Pessimistic ${projMoveText(P.low.pct)}`, color: "#F87171", dash: "2 4", pts: at(P.low) },
+        { key: "base", label: "Realistic", color: "#E8EDF3", dash: "6 4", pts: at(P.base) },
+        { key: "opt", label: `Optimistic ${projMoveText(P.high.pct)}`, color: "#4ADE80", dash: "6 4", pts: at(P.high) },
+      ],
+    };
   }, [cumulative, barges, exchangeRateHistory, calculateRevenue]);
 
   const d = (t) => new Date(t);
@@ -3621,11 +3640,16 @@ function FinancialTrends({ hpmHistory, exchangeRateHistory, barges, calculateRev
         note={cumProjection ? (
           <>
             <span className="trend-legend"><i className="lg-solid" /> Actual</span>
-            <span className="trend-legend"><i className="lg-dash" /> Projected year end {fmtIdrShort(cumProjection.points[0].y, 2)} (latest price)</span>
-            <span className="trend-legend"><i className="lg-band" /> Range {fmtIdrShort(cumProjection.points[0].lo, 2)} (−10%) to {fmtIdrShort(cumProjection.points[0].hi, 2)} (+20%)</span>
+            {cumProjection.lines.map((l) => (
+              <span key={l.key} className="trend-legend">
+                <i style={{ borderTopColor: l.color, borderTopStyle: l.key === "pess" ? "dotted" : "dashed" }} />
+                {l.label}: {fmtIdrShort(l.pts[0].y, 2)}
+              </span>
+            ))}
+            <span className="trend-legend"><i className="lg-band" /> Range between pessimistic and optimistic</span>
           </>
         ) : null}>
-        <TrendChart label="Cumulative gross revenue" series={cumulative} projection={cumProjection ? cumProjection.points : null} color="#4ADE80" zeroBased yTick={(v) => fmtIdrShort(v)} tipValue={idrFull}
+        <TrendChart label="Cumulative gross revenue" series={cumulative} projection={cumProjection} color="#4ADE80" zeroBased yTick={(v) => fmtIdrShort(v)} tipValue={idrFull}
           xTick={monTick} tipDate={monTip} emptyText="No revenue yet. Enter a sale price on a finalized barge in the Barging Plan tab." />
       </TrendCard>
     </div>
@@ -7940,6 +7964,9 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .trend-legend i.lg-dash { border-top-style: dashed; }
 .trend-legend i.lg-band { height: 10px; border: none; border-radius: 2px; background: rgba(74,222,128,.18); }
 @media (max-width: 700px) { .trend-legend { white-space: normal; margin-right: 10px; } }
+.trend-tip-row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #B7C0CC; margin-top: 3px; white-space: nowrap; }
+.trend-tip-row i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.trend-tip-row b { margin-left: auto; padding-left: 10px; font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #E8EDF3; }
 .proj-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .proj-stat { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px 14px; min-width: 0; }
 .proj-label { font-size: 11px; color: #8A97A8; font-weight: 600; }
