@@ -3588,6 +3588,159 @@ function FinancialTrends({ hpmHistory, exchangeRateHistory, barges, calculateRev
   );
 }
 
+const BARGE_PLAN_TARGET = 54; // total barges in the 2026 plan
+const PROJECTION_MOVES = [-15, -10, -5, 0, 5, 10, 15]; // HPM scenarios, in %
+const PROJ_MONTH_MS = 30.4375 * 86400000;
+
+/* Rest-of-2026 revenue projection (gross, before royalty, PPh 22 and PPN).
+ * Base = latest sale price and latest USD/IDR rate, with barging pace from finalized barges over the
+ * last 3 months (whole history if none in that window). HPM scenarios move the sale price by the same %.
+ * Draft barges are not counted; they are shown as pipeline only. */
+function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateRevenue }) {
+  const now = new Date();
+  const dayMs = 86400000;
+  const nowMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  const yearEndMs = Date.UTC(now.getFullYear(), 11, 31);
+  const monthsLeft = Math.max(0, (yearEndMs - nowMs) / PROJ_MONTH_MS);
+  const threeMonthsAgo = Date.UTC(now.getFullYear(), now.getMonth() - 3, now.getDate());
+
+  const dated = (list) => list.map((b) => ({ b, t: isoToUtcMs(b.shipDate) })).filter((x) => !isNaN(x.t));
+
+  // Pace: finalized barges per month
+  const finalizedDated = dated(barges.filter((b) => b.finalized));
+  const recent = finalizedDated.filter((x) => x.t >= threeMonthsAgo && x.t <= nowMs + dayMs);
+  let pace = 0, paceBasis = "no finalized barges yet";
+  if (recent.length) { pace = recent.length / 3; paceBasis = "last 3 months"; }
+  else if (finalizedDated.length) {
+    const first = Math.min(...finalizedDated.map((x) => x.t));
+    pace = finalizedDated.length / Math.max(1, (nowMs - first) / PROJ_MONTH_MS);
+    paceBasis = "whole barging history";
+  }
+  const avgWmt = finalizedDated.length
+    ? finalizedDated.reduce((s, x) => s + (x.b.totalWMT || 0), 0) / finalizedDated.length : 0;
+
+  // Latest sale price (by ship date) and latest exchange rate
+  const pricedDated = dated(barges.filter((b) => Number(b.salePrice) > 0)).sort((a, b) => b.t - a.t);
+  const latestPriced = pricedDated[0] ? pricedDated[0].b : null;
+  const price = latestPriced ? Number(latestPriced.salePrice) : 0;
+  const fxEntry = exchangeRateHistory
+    .filter((h) => h && h.date && Number(h.rate) > 0)
+    .sort((a, b) => isoToUtcMs(b.date) - isoToUtcMs(a.date))[0];
+  const fx = fxEntry ? Number(fxEntry.rate) : 0;
+  const ready = pace > 0 && avgWmt > 0 && price > 0 && fx > 0;
+
+  // Pipeline: draft barges dated for the rest of the year
+  const drafts = dated(barges.filter((b) => !b.finalized && (b.totalWMT || 0) > 0))
+    .filter((x) => x.t >= nowMs && x.t <= yearEndMs);
+  const draftWmt = drafts.reduce((s, x) => s + (x.b.totalWMT || 0), 0);
+
+  // Year to date actual gross (finalized, priced barges shipped this year)
+  const thisYear = now.getFullYear();
+  const ytdRevenue = barges
+    .filter((b) => b.finalized && !isNaN(isoToUtcMs(b.shipDate)) && new Date(isoToUtcMs(b.shipDate)).getUTCFullYear() === thisYear)
+    .reduce((s, b) => s + calculateRevenue(b), 0);
+
+  const newBarges = ready ? pace * monthsLeft : 0;
+  const newWmt = newBarges * avgWmt;
+  const scenarios = PROJECTION_MOVES.map((pct) => {
+    const p = price * (1 + pct / 100);
+    return { pct, p, rev: newWmt * p * fx };
+  });
+  const base = scenarios.find((s) => s.pct === 0);
+  const low = scenarios[0];
+  const high = scenarios[scenarios.length - 1];
+
+  const yearEndBarges = Math.round(finalizedDated.length + newBarges);
+  const gap = BARGE_PLAN_TARGET - yearEndBarges;
+  const neededPace = monthsLeft > 0 ? (BARGE_PLAN_TARGET - finalizedDated.length) / monthsLeft : null;
+
+  // How often HPM has moved by 5, 10 and 15% between recorded updates
+  const hs = hpmHistory
+    .filter((h) => h && h.date && Number(h.price) > 0)
+    .map((h) => ({ t: isoToUtcMs(h.date), p: Number(h.price) }))
+    .filter((x) => !isNaN(x.t))
+    .sort((a, b) => a.t - b.t);
+  const moves = [];
+  for (let i = 1; i < hs.length; i++) moves.push(Math.abs((hs[i].p - hs[i - 1].p) / hs[i - 1].p) * 100);
+  const countMoves = (n) => moves.filter((m) => m >= n).length;
+
+  const idr = (v) => fmtIdrShort(v, 2);
+  const moveLabel = (p) => (p === 0 ? "Latest price" : `${p > 0 ? "+" : "−"}${Math.abs(p)}%`);
+  const scenarioName = (p) => (p === 0 ? "Base" : p > 0 ? "Optimistic" : "Pessimistic");
+
+  if (!ready) {
+    return (
+      <p className="note" style={{ marginTop: 0 }}>
+        The projection needs at least one finalized barge with tonnage, a finalized barge with a sale price, and an exchange rate.
+        Once those are in, it fills in automatically.
+      </p>
+    );
+  }
+
+  return (
+    <div>
+      <p className="note" style={{ marginTop: 0, marginBottom: 14 }}>
+        Base uses the latest sale price (${price.toFixed(2)}/WMT, from the barge shipping {latestPriced.shipDate}),
+        the latest exchange rate (Rp {fx.toLocaleString("id-ID")}/USD), and a pace of {pace.toFixed(2)} barges per month
+        ({paceBasis}) at {Math.round(avgWmt).toLocaleString("en-US")} WMT average. Optimistic and pessimistic scenarios move the
+        sale price by the same percentage as HPM. All figures are gross, before royalty, PPh 22 and PPN.
+      </p>
+
+      <div className="proj-stats">
+        <div className="proj-stat">
+          <div className="proj-label">Months left in 2026</div>
+          <div className="proj-value">{monthsLeft.toFixed(1)}</div>
+        </div>
+        <div className="proj-stat">
+          <div className="proj-label">Projected new barges (base)</div>
+          <div className="proj-value">{newBarges.toFixed(1)}</div>
+          <div className="proj-sub">{Math.round(newWmt).toLocaleString("en-US")} WMT</div>
+        </div>
+        <div className="proj-stat">
+          <div className="proj-label">Year-end barges vs plan</div>
+          <div className="proj-value">{yearEndBarges} / {BARGE_PLAN_TARGET}</div>
+          <div className="proj-sub">
+            {gap > 0
+              ? `${gap} short · needs ${neededPace.toFixed(1)}/month`
+              : "Plan reached at this pace"}
+          </div>
+        </div>
+      </div>
+
+      <div className="proj-table">
+        <div className="proj-row proj-head">
+          <div>Scenario</div><div>HPM move</div><div>Price (USD/WMT)</div><div>New barges</div><div>WMT</div><div>Gross revenue</div>
+        </div>
+        {scenarios.map((s) => (
+          <div key={s.pct} className={`proj-row${s.pct === 0 ? " proj-base" : ""}`}>
+            <div>{scenarioName(s.pct)}</div>
+            <div className={s.pct > 0 ? "up" : s.pct < 0 ? "down" : ""}>{moveLabel(s.pct)}</div>
+            <div>${s.p.toFixed(2)}</div>
+            <div>{newBarges.toFixed(1)}</div>
+            <div>{Math.round(newWmt).toLocaleString("en-US")}</div>
+            <div className="proj-money">{idr(s.rev)}</div>
+          </div>
+        ))}
+      </div>
+
+      <p className="note" style={{ marginBottom: 8 }}>
+        Year total gross (actual to date {idr(ytdRevenue)} + projection): pessimistic {idr(ytdRevenue + low.rev)},
+        base {idr(ytdRevenue + base.rev)}, optimistic {idr(ytdRevenue + high.rev)}.
+      </p>
+      <p className="note" style={{ marginBottom: 8 }}>
+        {moves.length > 0
+          ? `In your HPM history (${moves.length} change${moves.length === 1 ? "" : "s"} between updates): ${countMoves(5)} moved 5% or more, ${countMoves(10)} moved 10% or more, ${countMoves(15)} moved 15% or more.`
+          : "Not enough HPM history yet to check how often it moves 5–15% between updates."}
+      </p>
+      <p className="note" style={{ marginBottom: 0 }}>
+        {drafts.length > 0
+          ? `Pipeline: ${drafts.length} draft barge${drafts.length === 1 ? "" : "s"} dated for the rest of 2026 (${Math.round(draftWmt).toLocaleString("en-US")} WMT) are not counted above.`
+          : "Pipeline: no draft barges dated for the rest of 2026."}
+      </p>
+    </div>
+  );
+}
+
 /* ============================================================
  * FinancialsTab — admin-only royalty/PNBP calculator.
  * Royalty (IDR) = HMA price (USD/WMT) x Exchange Rate (IDR/USD) x Barge Qty (WMT) x 15% tariff.
@@ -3668,6 +3821,10 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
 
       <CollapsibleSection storageKey="trends" icon={<TrendingUp size={16} />} title="Trends" subtitle="HPM, exchange rate and gross revenue over time">
         <FinancialTrends hpmHistory={hpmHistory} exchangeRateHistory={exchangeRateHistory} barges={barges} calculateRevenue={calculateRevenue} />
+      </CollapsibleSection>
+
+      <CollapsibleSection storageKey="projection" icon={<TrendingUp size={16} />} title="Revenue projection, rest of 2026" subtitle="Latest price and rate, HPM ±5 / 10 / 15% scenarios">
+        <RevenueProjection barges={barges} hpmHistory={hpmHistory} exchangeRateHistory={exchangeRateHistory} calculateRevenue={calculateRevenue} />
       </CollapsibleSection>
 
       <CollapsibleSection storageKey="royalty" icon={<DollarSign size={16} />} title="Royalty by Barge"
@@ -7728,6 +7885,22 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .revenue-row .cell-muted { color: #667080; font-family: 'Inter', sans-serif; font-style: italic; }
 .info-hint { font-size: 11px; color: #8A97A8; margin-top: 4px; font-family: 'Inter', sans-serif; line-height: 1.35; }
 @media (max-width: 900px) { .revenue-table { overflow-x: auto; } .revenue-header, .revenue-row { min-width: 820px; } }
+
+.proj-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.proj-stat { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.proj-label { font-size: 11px; color: #8A97A8; font-weight: 600; }
+.proj-value { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700; color: #E8EDF3; margin-top: 4px; }
+.proj-sub { font-size: 11px; color: #8A97A8; margin-top: 2px; }
+.proj-table { background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; overflow-x: auto; }
+.proj-row { display: grid; grid-template-columns: 1.1fr 1fr 1fr 0.9fr 1fr 1.5fr; gap: 10px; align-items: center; padding: 10px 16px; min-width: 640px;
+  border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; color: #B7C0CC; font-family: 'JetBrains Mono', monospace; }
+.proj-row:last-child { border-bottom: none; }
+.proj-row.proj-head { background: rgba(255,255,255,.06); font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; color: #8A97A8; text-transform: uppercase; letter-spacing: .04em; }
+.proj-row.proj-base { background: rgba(227,95,12,.08); }
+.proj-row .up { color: #4ADE80; }
+.proj-row .down { color: #F87171; }
+.proj-row .proj-money { color: #4ADE80; font-weight: 700; }
+@media (max-width: 700px) { .proj-stats { grid-template-columns: 1fr; } }
 
 /* ============================ COLLAPSIBLE PANELS ============================ */
 .cs-head { display: flex; align-items: center; gap: 10px; }
