@@ -3372,14 +3372,15 @@ function niceTicks(min, max, count = 4) {
 }
 function fmtIdrShort(v, digits = 1) {
   const a = Math.abs(v);
-  const f = (n, d) => n.toLocaleString("id-ID", { minimumFractionDigits: 0, maximumFractionDigits: d });
+  // Two-decimal headline amounts keep both decimals (Rp 3,70 M, not Rp 3,7 M) so columns line up
+  const f = (n, d) => n.toLocaleString("id-ID", { minimumFractionDigits: d >= 2 ? d : 0, maximumFractionDigits: d });
   if (a >= 1e12) return `Rp ${f(v / 1e12, digits)} T`;
   if (a >= 1e9) return `Rp ${f(v / 1e9, digits)} M`;
   if (a >= 1e6) return `Rp ${f(v / 1e6, 0)} Jt`;
   return `Rp ${f(v, 0)}`;
 }
 
-function TrendChart({ series, color, zeroBased = false, yTick, tipValue, xTick, tipDate, height = 190, emptyText, label }) {
+function TrendChart({ series, projection = null, color, zeroBased = false, yTick, tipValue, xTick, tipDate, height = 190, emptyText, label }) {
   const wrapRef = useRef(null);
   const [w, setW] = useState(560);
   const [hover, setHover] = useState(null);
@@ -3394,13 +3395,17 @@ function TrendChart({ series, color, zeroBased = false, yTick, tipValue, xTick, 
 
   if (!series.length) return <div className="trend-empty">{emptyText}</div>;
 
+  // Optional projection: points {t, y, lo, hi} drawn dashed after the last actual point, with a lo–hi band
+  const proj = projection && projection.length ? projection : [];
+  const n = series.length;
+  const all = [...series, ...proj];
   const pad = { l: 60, r: 14, t: 14, b: 26 };
   const iw = Math.max(10, w - pad.l - pad.r);
   const ih = height - pad.t - pad.b;
-  const ts = series.map((p) => p.t);
+  const ts = all.map((p) => p.t);
   let t0 = Math.min(...ts), t1 = Math.max(...ts);
   if (t0 === t1) { t0 -= 15 * 864e5; t1 += 15 * 864e5; }
-  const ys = series.map((p) => p.y);
+  const ys = [...series.map((p) => p.y), ...proj.flatMap((p) => [p.y, p.lo ?? p.y, p.hi ?? p.y])];
   let ymin = Math.min(...ys), ymax = Math.max(...ys);
   if (zeroBased) ymin = Math.min(0, ymin);
   else { const m = (ymax - ymin) * 0.12 || Math.abs(ymax) * 0.02 || 1; ymin -= m; ymax += m; }
@@ -3410,16 +3415,28 @@ function TrendChart({ series, color, zeroBased = false, yTick, tipValue, xTick, 
   const x = (t) => pad.l + ((t - t0) / (t1 - t0)) * iw;
   const y = (v) => pad.t + (1 - (v - yLo) / (yHi - yLo || 1)) * ih;
 
-  const pts = series.map((p) => [x(p.t), y(p.y)]);
-  const line = pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(1)},${py.toFixed(1)}`).join(" ");
-  const area = `${line} L${pts[pts.length - 1][0].toFixed(1)},${(pad.t + ih).toFixed(1)} L${pts[0][0].toFixed(1)},${(pad.t + ih).toFixed(1)} Z`;
+  const pts = all.map((p) => [x(p.t), y(p.y)]);
+  const actPts = pts.slice(0, n);
+  const P = ([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`;
+  const line = actPts.map((q, i) => `${i ? "L" : "M"}${P(q)}`).join(" ");
+  const area = `${line} L${actPts[n - 1][0].toFixed(1)},${(pad.t + ih).toFixed(1)} L${actPts[0][0].toFixed(1)},${(pad.t + ih).toFixed(1)} Z`;
+  const projLine = proj.length ? `M${P(actPts[n - 1])} ` + pts.slice(n).map((q) => `L${P(q)}`).join(" ") : null;
+  const band = proj.length
+    ? `M${P(actPts[n - 1])} ` + proj.map((p) => `L${P([x(p.t), y(p.hi ?? p.y)])}`).join(" ") + " "
+      + [...proj].reverse().map((p) => `L${P([x(p.t), y(p.lo ?? p.y)])}`).join(" ") + " Z"
+    : null;
 
   // x labels sit on real data points, thinned to what fits
-  const maxLabels = Math.max(2, Math.floor(iw / 78));
-  const stepIdx = Math.max(1, Math.ceil(series.length / maxLabels));
-  const xLabelIdx = series.map((_, i) => i).filter((i) => i % stepIdx === 0 || i === series.length - 1);
+  // Thinned by on-screen distance, so uneven spacing (e.g. a projection months ahead) never overlaps
+  const minGap = 66;
+  const xLabelIdx = [];
+  pts.forEach(([px], i) => { if (!xLabelIdx.length || px - pts[xLabelIdx[xLabelIdx.length - 1]][0] >= minGap) xLabelIdx.push(i); });
   // The latest point is always labelled; if it crowds the label before it, drop that one instead
-  if (xLabelIdx.length > 2 && xLabelIdx[xLabelIdx.length - 1] - xLabelIdx[xLabelIdx.length - 2] < stepIdx * 0.6) xLabelIdx.splice(xLabelIdx.length - 2, 1);
+  const lastIdx = all.length - 1;
+  if (xLabelIdx[xLabelIdx.length - 1] !== lastIdx) {
+    if (xLabelIdx.length > 1 && pts[lastIdx][0] - pts[xLabelIdx[xLabelIdx.length - 1]][0] < minGap) xLabelIdx.pop();
+    xLabelIdx.push(lastIdx);
+  }
 
   const nearest = (px) => {
     let best = 0, bd = Infinity;
@@ -3431,18 +3448,19 @@ function TrendChart({ series, color, zeroBased = false, yTick, tipValue, xTick, 
     setHover(nearest((e.clientX - r.left) * (w / r.width)));
   };
   const onKey = (e) => {
-    if (e.key === "ArrowRight") { e.preventDefault(); setHover((h) => (h === null ? 0 : Math.min(series.length - 1, h + 1))); }
-    if (e.key === "ArrowLeft") { e.preventDefault(); setHover((h) => (h === null ? series.length - 1 : Math.max(0, h - 1))); }
+    if (e.key === "ArrowRight") { e.preventDefault(); setHover((h) => (h === null ? 0 : Math.min(all.length - 1, h + 1))); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); setHover((h) => (h === null ? all.length - 1 : Math.max(0, h - 1))); }
     if (e.key === "Escape") setHover(null);
   };
-  const hp = hover !== null ? pts[hover] : null;
-  const showMarkers = series.length <= 36;
-  const tipW = 168;
+  const hp = hover !== null && hover < all.length ? pts[hover] : null;
+  const hoverProj = hp && hover >= n ? all[hover] : null;
+  const showMarkers = all.length <= 36;
+  const tipW = hoverProj ? 196 : 168;
 
   return (
     <div className="trend-chart" ref={wrapRef}>
       <svg width={w} height={height} viewBox={`0 0 ${w} ${height}`} role="img" tabIndex={0}
-        aria-label={`${label}: ${series.length} points, latest ${tipValue(series[series.length - 1].y)}. Use left and right arrow keys to read values.`}
+        aria-label={`${label}: ${series.length} points, latest ${tipValue(series[series.length - 1].y)}${proj.length ? `, projected ${tipValue(proj[proj.length - 1].y)}` : ""}. Use left and right arrow keys to read values.`}
         onPointerMove={onMove} onPointerDown={onMove} onPointerLeave={() => setHover(null)} onKeyDown={onKey} onBlur={() => setHover(null)}>
         <defs>
           <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
@@ -3457,12 +3475,16 @@ function TrendChart({ series, color, zeroBased = false, yTick, tipValue, xTick, 
           </g>
         ))}
         {xLabelIdx.map((i) => (
-          <text key={i} x={pts[i][0]} y={height - 8} textAnchor={series.length === 1 ? "middle" : i === 0 ? "start" : i === series.length - 1 ? "end" : "middle"} className="trend-axis">{xTick(series[i].t)}</text>
+          <text key={i} x={pts[i][0]} y={height - 8} textAnchor={all.length === 1 ? "middle" : i === 0 ? "start" : i === all.length - 1 ? "end" : "middle"} className="trend-axis">{xTick(all[i].t)}</text>
         ))}
         {series.length > 1 && <path d={area} fill={`url(#${gradId})`} />}
         {series.length > 1 && <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />}
+        {band && <path d={band} fill={color} fillOpacity="0.12" stroke="none" />}
+        {projLine && <path d={projLine} fill="none" stroke={color} strokeWidth="2" strokeDasharray="5 4" strokeLinecap="round" />}
         {showMarkers && pts.map(([px, py], i) => (
-          <circle key={i} cx={px} cy={py} r={hover === i ? 5 : 3.5} fill={color} stroke="#121A26" strokeWidth="2" />
+          i < n
+            ? <circle key={i} cx={px} cy={py} r={hover === i ? 5 : 3.5} fill={color} stroke="#121A26" strokeWidth="2" />
+            : <circle key={i} cx={px} cy={py} r={hover === i ? 5.5 : 4.5} fill="#121A26" stroke={color} strokeWidth="2" />
         ))}
         {hp && (
           <>
@@ -3472,9 +3494,12 @@ function TrendChart({ series, color, zeroBased = false, yTick, tipValue, xTick, 
         )}
       </svg>
       {hp && (
-        <div className="trend-tip" style={{ left: Math.min(Math.max(hp[0] - tipW / 2, 0), w - tipW), top: Math.max(hp[1] - 62, 0), width: tipW }}>
-          <div className="trend-tip-date">{tipDate(series[hover].t)}</div>
-          <div className="trend-tip-val">{tipValue(series[hover].y)}</div>
+        <div className="trend-tip" style={{ left: Math.min(Math.max(hp[0] - tipW / 2, 0), w - tipW), top: Math.max(hp[1] - (hoverProj ? 104 : 62), 0), width: tipW }}>
+          <div className="trend-tip-date">{tipDate(all[hover].t)}{hoverProj ? " · projected" : ""}</div>
+          <div className="trend-tip-val">{tipValue(all[hover].y)}</div>
+          {hoverProj && hoverProj.lo != null && (
+            <div className="trend-tip-range">Low {tipValue(hoverProj.lo)}<br />High {tipValue(hoverProj.hi)}</div>
+          )}
         </div>
       )}
     </div>
@@ -3546,6 +3571,18 @@ function FinancialTrends({ hpmHistory, exchangeRateHistory, barges, calculateRev
     return { monthly: m, cumulative: c, pricedCount: priced, unpricedFinal: unpriced };
   }, [barges, calculateRevenue]);
 
+  // Year-end projection on the cumulative chart (same numbers as the Revenue projection table)
+  const cumProjection = useMemo(() => {
+    if (!cumulative.length) return null;
+    const P = computeRevenueProjection(barges, exchangeRateHistory, calculateRevenue);
+    if (!P.ready || !(P.newWmt > 0)) return null;
+    const lastPt = cumulative[cumulative.length - 1];
+    let t = Date.UTC(P.thisYear, 11, 1);
+    if (lastPt.t >= t) t = Date.UTC(P.thisYear, 11, 31);
+    if (lastPt.t >= t) return null;
+    return { points: [{ t, y: lastPt.y + P.base.rev, lo: lastPt.y + P.low.rev, hi: lastPt.y + P.high.rev }], P };
+  }, [cumulative, barges, exchangeRateHistory, calculateRevenue]);
+
   const d = (t) => new Date(t);
   const dayTick = (t) => `${d(t).getUTCDate()} ${MONTHS_SHORT[d(t).getUTCMonth()]}`;
   const dayTip = (t) => `${d(t).getUTCDate()} ${MONTHS_SHORT[d(t).getUTCMonth()]} ${d(t).getUTCFullYear()}`;
@@ -3580,8 +3617,15 @@ function FinancialTrends({ hpmHistory, exchangeRateHistory, barges, calculateRev
           xTick={monTick} tipDate={monTip} emptyText="No revenue yet. Enter a sale price on a finalized barge in the Barging Plan tab." />
       </TrendCard>
       <TrendCard title="Cumulative revenue (gross)" sub="Running total, year to date" value={last(cumulative) ? fmtIdrShort(last(cumulative).y, 2) : "—"}
-        delta={last(cumulative) ? <div className="trend-delta">{idrFull(last(cumulative).y)}</div> : null}>
-        <TrendChart label="Cumulative gross revenue" series={cumulative} color="#4ADE80" zeroBased yTick={(v) => fmtIdrShort(v)} tipValue={idrFull}
+        delta={last(cumulative) ? <div className="trend-delta">{idrFull(last(cumulative).y)}</div> : null}
+        note={cumProjection ? (
+          <>
+            <span className="trend-legend"><i className="lg-solid" /> Actual</span>
+            <span className="trend-legend"><i className="lg-dash" /> Projected year end {fmtIdrShort(cumProjection.points[0].y, 2)} (latest price)</span>
+            <span className="trend-legend"><i className="lg-band" /> Range {fmtIdrShort(cumProjection.points[0].lo, 2)} (−10%) to {fmtIdrShort(cumProjection.points[0].hi, 2)} (+20%)</span>
+          </>
+        ) : null}>
+        <TrendChart label="Cumulative gross revenue" series={cumulative} projection={cumProjection ? cumProjection.points : null} color="#4ADE80" zeroBased yTick={(v) => fmtIdrShort(v)} tipValue={idrFull}
           xTick={monTick} tipDate={monTip} emptyText="No revenue yet. Enter a sale price on a finalized barge in the Barging Plan tab." />
       </TrendCard>
     </div>
@@ -3589,24 +3633,23 @@ function FinancialTrends({ hpmHistory, exchangeRateHistory, barges, calculateRev
 }
 
 const BARGE_PLAN_TARGET = 54; // total barges in the 2026 plan
-const PROJECTION_MOVES = [-15, -10, -5, 0, 5, 10, 15]; // HPM scenarios, in %
+const PROJECTION_MOVES = [-10, 0, 10, 20]; // price scenarios vs the latest sale price, in %
 const PROJ_MONTH_MS = 30.4375 * 86400000;
 
-/* Rest-of-2026 revenue projection (gross, before royalty, PPh 22 and PPN).
+/* Rest-of-year revenue projection (gross, before royalty, PPh 22 and PPN). Shared by the projection
+ * table and the cumulative revenue chart so both show the same numbers.
  * Base = latest sale price and latest USD/IDR rate, with barging pace from finalized barges over the
- * last 3 months (whole history if none in that window). HPM scenarios move the sale price by the same %.
- * Draft barges are not counted; they are shown as pipeline only. */
-function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateRevenue }) {
+ * last 3 months (whole history if none in that window). Scenarios move the sale price by a fixed %.
+ * Draft barges are not counted; they are reported as pipeline only. */
+function computeRevenueProjection(barges, exchangeRateHistory, calculateRevenue) {
   const now = new Date();
   const dayMs = 86400000;
   const nowMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
   const yearEndMs = Date.UTC(now.getFullYear(), 11, 31);
   const monthsLeft = Math.max(0, (yearEndMs - nowMs) / PROJ_MONTH_MS);
   const threeMonthsAgo = Date.UTC(now.getFullYear(), now.getMonth() - 3, now.getDate());
-
   const dated = (list) => list.map((b) => ({ b, t: isoToUtcMs(b.shipDate) })).filter((x) => !isNaN(x.t));
 
-  // Pace: finalized barges per month
   const finalizedDated = dated(barges.filter((b) => b.finalized));
   const recent = finalizedDated.filter((x) => x.t >= threeMonthsAgo && x.t <= nowMs + dayMs);
   let pace = 0, paceBasis = "no finalized barges yet";
@@ -3619,7 +3662,6 @@ function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateR
   const avgWmt = finalizedDated.length
     ? finalizedDated.reduce((s, x) => s + (x.b.totalWMT || 0), 0) / finalizedDated.length : 0;
 
-  // Latest sale price (by ship date) and latest exchange rate
   const pricedDated = dated(barges.filter((b) => Number(b.salePrice) > 0)).sort((a, b) => b.t - a.t);
   const latestPriced = pricedDated[0] ? pricedDated[0].b : null;
   const price = latestPriced ? Number(latestPriced.salePrice) : 0;
@@ -3629,12 +3671,10 @@ function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateR
   const fx = fxEntry ? Number(fxEntry.rate) : 0;
   const ready = pace > 0 && avgWmt > 0 && price > 0 && fx > 0;
 
-  // Pipeline: draft barges dated for the rest of the year
   const drafts = dated(barges.filter((b) => !b.finalized && (b.totalWMT || 0) > 0))
     .filter((x) => x.t >= nowMs && x.t <= yearEndMs);
   const draftWmt = drafts.reduce((s, x) => s + (x.b.totalWMT || 0), 0);
 
-  // Year to date actual gross (finalized, priced barges shipped this year)
   const thisYear = now.getFullYear();
   const ytdRevenue = barges
     .filter((b) => b.finalized && !isNaN(isoToUtcMs(b.shipDate)) && new Date(isoToUtcMs(b.shipDate)).getUTCFullYear() === thisYear)
@@ -3650,11 +3690,21 @@ function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateR
   const low = scenarios[0];
   const high = scenarios[scenarios.length - 1];
 
-  const yearEndBarges = Math.round(finalizedDated.length + newBarges);
+  const finalizedCount = finalizedDated.length;
+  const yearEndBarges = Math.round(finalizedCount + newBarges);
   const gap = BARGE_PLAN_TARGET - yearEndBarges;
-  const neededPace = monthsLeft > 0 ? (BARGE_PLAN_TARGET - finalizedDated.length) / monthsLeft : null;
+  const neededPace = monthsLeft > 0 ? (BARGE_PLAN_TARGET - finalizedCount) / monthsLeft : null;
 
-  // How often HPM has moved by 5, 10 and 15% between recorded updates
+  return { ready, thisYear, monthsLeft, pace, paceBasis, avgWmt, latestPriced, price, fx, drafts, draftWmt,
+    ytdRevenue, newBarges, newWmt, scenarios, base, low, high, yearEndBarges, gap, neededPace };
+}
+
+const projMoveText = (p) => (p === 0 ? "base" : `${p > 0 ? "+" : "−"}${Math.abs(p)}%`);
+
+function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateRevenue }) {
+  const P = computeRevenueProjection(barges, exchangeRateHistory, calculateRevenue);
+
+  // How often HPM has moved by 10 and 20% between recorded updates (matches the scenario steps)
   const hs = hpmHistory
     .filter((h) => h && h.date && Number(h.price) > 0)
     .map((h) => ({ t: isoToUtcMs(h.date), p: Number(h.price) }))
@@ -3668,7 +3718,7 @@ function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateR
   const moveLabel = (p) => (p === 0 ? "Latest price" : `${p > 0 ? "+" : "−"}${Math.abs(p)}%`);
   const scenarioName = (p) => (p === 0 ? "Base" : p > 0 ? "Optimistic" : "Pessimistic");
 
-  if (!ready) {
+  if (!P.ready) {
     return (
       <p className="note" style={{ marginTop: 0 }}>
         The projection needs at least one finalized barge with tonnage, a finalized barge with a sale price, and an exchange rate.
@@ -3680,62 +3730,60 @@ function RevenueProjection({ barges, hpmHistory, exchangeRateHistory, calculateR
   return (
     <div>
       <p className="note" style={{ marginTop: 0, marginBottom: 14 }}>
-        Base uses the latest sale price (${price.toFixed(2)}/WMT, from the barge shipping {latestPriced.shipDate}),
-        the latest exchange rate (Rp {fx.toLocaleString("id-ID")}/USD), and a pace of {pace.toFixed(2)} barges per month
-        ({paceBasis}) at {Math.round(avgWmt).toLocaleString("en-US")} WMT average. Optimistic and pessimistic scenarios move the
-        sale price by the same percentage as HPM. All figures are gross, before royalty, PPh 22 and PPN.
+        Base uses the latest sale price (${P.price.toFixed(2)}/WMT, from the barge shipping {P.latestPriced.shipDate}),
+        the latest exchange rate (Rp {P.fx.toLocaleString("id-ID")}/USD), and a pace of {P.pace.toFixed(2)} barges per month
+        ({P.paceBasis}) at {Math.round(P.avgWmt).toLocaleString("en-US")} WMT average. The other scenarios move the sale price
+        by the percentage shown. All figures are gross, before royalty, PPh 22 and PPN.
       </p>
 
       <div className="proj-stats">
         <div className="proj-stat">
-          <div className="proj-label">Months left in 2026</div>
-          <div className="proj-value">{monthsLeft.toFixed(1)}</div>
+          <div className="proj-label">Months left in {P.thisYear}</div>
+          <div className="proj-value">{P.monthsLeft.toFixed(1)}</div>
         </div>
         <div className="proj-stat">
           <div className="proj-label">Projected new barges (base)</div>
-          <div className="proj-value">{newBarges.toFixed(1)}</div>
-          <div className="proj-sub">{Math.round(newWmt).toLocaleString("en-US")} WMT</div>
+          <div className="proj-value">{P.newBarges.toFixed(1)}</div>
+          <div className="proj-sub">{Math.round(P.newWmt).toLocaleString("en-US")} WMT</div>
         </div>
         <div className="proj-stat">
           <div className="proj-label">Year-end barges vs plan</div>
-          <div className="proj-value">{yearEndBarges} / {BARGE_PLAN_TARGET}</div>
+          <div className="proj-value">{P.yearEndBarges} / {BARGE_PLAN_TARGET}</div>
           <div className="proj-sub">
-            {gap > 0
-              ? `${gap} short · needs ${neededPace.toFixed(1)}/month`
-              : "Plan reached at this pace"}
+            {P.gap > 0 ? `${P.gap} short · needs ${P.neededPace.toFixed(1)}/month` : "Plan reached at this pace"}
           </div>
         </div>
       </div>
 
       <div className="proj-table">
         <div className="proj-row proj-head">
-          <div>Scenario</div><div>HPM move</div><div>Price (USD/WMT)</div><div>New barges</div><div>WMT</div><div>Gross revenue</div>
+          <div>Scenario</div><div>Price move</div><div>Price (USD/WMT)</div><div>New barges</div><div>WMT</div><div>Gross revenue</div>
         </div>
-        {scenarios.map((s) => (
+        {P.scenarios.map((s) => (
           <div key={s.pct} className={`proj-row${s.pct === 0 ? " proj-base" : ""}`}>
             <div>{scenarioName(s.pct)}</div>
             <div className={s.pct > 0 ? "up" : s.pct < 0 ? "down" : ""}>{moveLabel(s.pct)}</div>
             <div>${s.p.toFixed(2)}</div>
-            <div>{newBarges.toFixed(1)}</div>
-            <div>{Math.round(newWmt).toLocaleString("en-US")}</div>
+            <div>{P.newBarges.toFixed(1)}</div>
+            <div>{Math.round(P.newWmt).toLocaleString("en-US")}</div>
             <div className="proj-money">{idr(s.rev)}</div>
           </div>
         ))}
       </div>
 
       <p className="note" style={{ marginBottom: 8 }}>
-        Year total gross (actual to date {idr(ytdRevenue)} + projection): pessimistic {idr(ytdRevenue + low.rev)},
-        base {idr(ytdRevenue + base.rev)}, optimistic {idr(ytdRevenue + high.rev)}.
+        Year total gross (actual to date {idr(P.ytdRevenue)} + projection):{" "}
+        {P.scenarios.map((s) => `${projMoveText(s.pct)} ${idr(P.ytdRevenue + s.rev)}`).join(" · ")}.
       </p>
       <p className="note" style={{ marginBottom: 8 }}>
         {moves.length > 0
-          ? `In your HPM history (${moves.length} change${moves.length === 1 ? "" : "s"} between updates): ${countMoves(5)} moved 5% or more, ${countMoves(10)} moved 10% or more, ${countMoves(15)} moved 15% or more.`
-          : "Not enough HPM history yet to check how often it moves 5–15% between updates."}
+          ? `In your HPM history (${moves.length} change${moves.length === 1 ? "" : "s"} between updates): ${countMoves(10)} moved 10% or more, ${countMoves(20)} moved 20% or more.`
+          : "Not enough HPM history yet to check how often it moves 10–20% between updates."}
       </p>
       <p className="note" style={{ marginBottom: 0 }}>
-        {drafts.length > 0
-          ? `Pipeline: ${drafts.length} draft barge${drafts.length === 1 ? "" : "s"} dated for the rest of 2026 (${Math.round(draftWmt).toLocaleString("en-US")} WMT) are not counted above.`
-          : "Pipeline: no draft barges dated for the rest of 2026."}
+        {P.drafts.length > 0
+          ? `Pipeline: ${P.drafts.length} draft barge${P.drafts.length === 1 ? "" : "s"} dated for the rest of ${P.thisYear} (${Math.round(P.draftWmt).toLocaleString("en-US")} WMT) are not counted above.`
+          : `Pipeline: no draft barges dated for the rest of ${P.thisYear}.`}
       </p>
     </div>
   );
@@ -3823,7 +3871,7 @@ function FinancialsTab({ barges, hpmHistory, setHpmHistory, exchangeRateHistory,
         <FinancialTrends hpmHistory={hpmHistory} exchangeRateHistory={exchangeRateHistory} barges={barges} calculateRevenue={calculateRevenue} />
       </CollapsibleSection>
 
-      <CollapsibleSection storageKey="projection" icon={<TrendingUp size={16} />} title="Revenue projection, rest of 2026" subtitle="Latest price and rate, HPM ±5 / 10 / 15% scenarios">
+      <CollapsibleSection storageKey="projection" icon={<TrendingUp size={16} />} title="Revenue projection, rest of 2026" subtitle="Latest price and rate, with −10%, +10% and +20% price scenarios">
         <RevenueProjection barges={barges} hpmHistory={hpmHistory} exchangeRateHistory={exchangeRateHistory} calculateRevenue={calculateRevenue} />
       </CollapsibleSection>
 
@@ -7886,6 +7934,12 @@ html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 .info-hint { font-size: 11px; color: #8A97A8; margin-top: 4px; font-family: 'Inter', sans-serif; line-height: 1.35; }
 @media (max-width: 900px) { .revenue-table { overflow-x: auto; } .revenue-header, .revenue-row { min-width: 820px; } }
 
+.trend-tip-range { font-size: 11px; color: #8A97A8; margin-top: 2px; }
+.trend-legend { display: inline-flex; align-items: center; gap: 6px; margin-right: 14px; white-space: nowrap; }
+.trend-legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid #4ADE80; }
+.trend-legend i.lg-dash { border-top-style: dashed; }
+.trend-legend i.lg-band { height: 10px; border: none; border-radius: 2px; background: rgba(74,222,128,.18); }
+@media (max-width: 700px) { .trend-legend { white-space: normal; margin-right: 10px; } }
 .proj-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .proj-stat { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px 14px; min-width: 0; }
 .proj-label { font-size: 11px; color: #8A97A8; font-weight: 600; }
